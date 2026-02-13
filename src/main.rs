@@ -3,16 +3,19 @@
 #![allow(unused_imports)]
 #![allow(unused_mut)]
 
+use std::time::Duration;
+
 use bevy::{ecs::relationship::RelationshipSourceCollection, input::*, math::VectorSpace, prelude::*, sprite_render::Material2d, ui::Pressed};
 
 const BALL_SPEED: f32 = 5.0;
 const BALL_SIZE: f32 = 6.0;
 const BALL_SHAPE: Circle = Circle::new(BALL_SIZE);
 const BALL_COLOR: Color = Color::srgb(1.0, 0., 0.);
-const IMPULSE_DECAY_RATE: f32 = 2.5;
+const IMPULSE_DECAY_RATE: f32 = 5.0;
 
 const PLAYER_COLOR: Color = Color::srgb(0.0, 0.5, 1.0);
 
+#[derive(PartialEq)]
 enum MovementState {
 	Normal,
 	Knockbacked,
@@ -124,14 +127,33 @@ fn impulse(
 	entity: Entity,
 	force: Vec2,
 ) {
-	commands.entity(entity).insert(Impulse(force));
+	println!("impulsed");
+	commands.entity(entity)
+		.insert(Impulse(force))
+		.entry::<MoveState>()
+		.and_modify(|mut move_state| {
+			let MoveState(ref mut state) = *move_state;
+			*state = MovementState::Knockbacked;
+		});
 }
 
-const _IMPULSE_INTERVAL: f32 = 1.0;
+
+const _IMPULSE_INTERVAL: f32 = 2.0;
+const _IMPULSE_FORCE: Vec2 = Vec2::new(1.0, 1.4);
+
+#[derive(Resource, Default)]
+struct ImpulseExpTimer(Timer);
 fn _impulse_experiment(
-	
+	time: Res<Time>,
+	mut timer: ResMut<ImpulseExpTimer>,
+	plr: Single<(Entity, &mut MoveState), With<Player>>,
+	commands: Commands,
 ) {
-	
+	timer.0.tick(time.delta());
+	if timer.0.just_finished() {
+		let (entity, mut move_state) = plr.into_inner();
+		impulse(commands, entity, _IMPULSE_FORCE);
+	}
 }
 
 fn main() {
@@ -149,6 +171,8 @@ fn main() {
 		handle_move.after(handle_directional_move),
 		project_positions.after(handle_move),
 	));
+	app.add_systems(Update, _impulse_experiment);
+	app.insert_resource(ImpulseExpTimer(Timer::from_seconds(_IMPULSE_INTERVAL, TimerMode::Repeating)));
 	app.run();
 }
 
@@ -189,18 +213,24 @@ fn project_positions(
 
 fn handle_impulse(
 	mut commands: Commands,
-	mut impulsed: Query<(Entity, &mut Velocity, &mut Impulse)>,
+	mut impulsed: Query<(Entity, &mut Velocity, &mut Impulse, &mut MoveState)>,
 	time: Res<Time<Fixed>>,
 ) {
 	let delta = time.delta_secs();
-	for (entity, mut velocity, mut impulse) in impulsed {
+	for (entity, mut velocity, mut impulse, mut move_state) in impulsed {
 		velocity.0 += impulse.0;
 		
 		let magnitude = impulse.0.length();
 		let decay = IMPULSE_DECAY_RATE * delta;
 		
 		if magnitude <= decay { // remove if its less than decay meaning its near ZERO
-			commands.entity(entity).remove::<Impulse>();
+			let mut cmd = commands.entity(entity);
+			cmd.remove::<Impulse>();
+			
+			let MoveState(ref mut state) = *move_state;
+			if *state == MovementState::Knockbacked {
+				*state = MovementState::Normal;
+			}
 		} else {
 			impulse.0 = impulse.0.normalize() * (magnitude - decay)
 		}

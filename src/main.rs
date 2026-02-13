@@ -137,25 +137,6 @@ fn impulse(
 		});
 }
 
-
-const _IMPULSE_INTERVAL: f32 = 2.0;
-const _IMPULSE_FORCE: Vec2 = Vec2::new(1.0, 1.4);
-
-#[derive(Resource, Default)]
-struct ImpulseExpTimer(Timer);
-fn _impulse_experiment(
-	time: Res<Time>,
-	mut timer: ResMut<ImpulseExpTimer>,
-	plr: Single<(Entity, &mut MoveState), With<Player>>,
-	commands: Commands,
-) {
-	timer.0.tick(time.delta());
-	if timer.0.just_finished() {
-		let (entity, mut move_state) = plr.into_inner();
-		impulse(commands, entity, _IMPULSE_FORCE);
-	}
-}
-
 fn main() {
 	let mut app = App::new();
 	app.add_plugins(DefaultPlugins);
@@ -171,8 +152,6 @@ fn main() {
 		handle_move.after(handle_directional_move),
 		project_positions.after(handle_move),
 	));
-	app.add_systems(Update, _impulse_experiment);
-	app.insert_resource(ImpulseExpTimer(Timer::from_seconds(_IMPULSE_INTERVAL, TimerMode::Repeating)));
 	app.run();
 }
 

@@ -3,7 +3,7 @@
 #![allow(unused_imports)]
 #![allow(unused_mut)]
 
-use bevy::{math::VectorSpace, prelude::*, sprite_render::Material2d, input::*};
+use bevy::{ecs::relationship::RelationshipSourceCollection, input::*, math::VectorSpace, prelude::*, sprite_render::Material2d, ui::Pressed};
 
 const BALL_SPEED: f32 = 5.0;
 const BALL_SIZE: f32 = 6.0;
@@ -11,7 +11,12 @@ const BALL_SHAPE: Circle = Circle::new(BALL_SIZE);
 const BALL_COLOR: Color = Color::srgb(1.0, 0., 0.);
 const IMPULSE_DECAY_RATE: f32 = 2.5;
 
-const PLAYER_COLOR: Color = Color::srgb(0.0, 1.0, 0.0);
+const PLAYER_COLOR: Color = Color::srgb(0.0, 0.5, 1.0);
+
+enum MovementState {
+	Normal,
+	Knockbacked,
+}
 
 #[derive(Component, Default)]
 #[require(Transform)]
@@ -30,16 +35,23 @@ struct MoveDirection(Vec2);
 struct Impulse(Vec2);
 
 #[derive(Component)]
+struct MoveState(MovementState);
+
+#[derive(Component)]
 #[require(
 	Position,
 	Velocity = Velocity(Vec2::ZERO),
 	MoveDirection = MoveDirection(Vec2::ZERO),
 	MoveSpeed = MoveSpeed(BALL_SPEED),
+	MoveState = MoveState(MovementState::Normal),
 )]
 struct Ball;
 
 #[derive(Component)]
 struct Player;
+
+
+
 
 fn spawn_camera(
 	mut commands: Commands,
@@ -107,19 +119,35 @@ fn spawn_regular_bawl(
 	);
 }
 
+fn impulse(
+	mut commands: Commands,
+	entity: Entity,
+	force: Vec2,
+) {
+	commands.entity(entity).insert(Impulse(force));
+}
+
+const _IMPULSE_INTERVAL: f32 = 1.0;
+fn _impulse_experiment(
+	
+) {
+	
+}
+
 fn main() {
 	let mut app = App::new();
 	app.add_plugins(DefaultPlugins);
 	app.add_systems(Startup, (
 		spawn_camera,
-		spawn_regular_bawl,
+		// spawn_regular_bawl,
 		spawn_player,
 	));
 	app.add_systems(FixedUpdate, (
-		project_positions.after(handle_move),
 		handle_input,
-		handle_move_velocity,
-		handle_move.after(handle_move_velocity),
+		handle_impulse.before(handle_move),
+		handle_directional_move,
+		handle_move.after(handle_directional_move),
+		project_positions.after(handle_move),
 	));
 	app.run();
 }
@@ -128,13 +156,26 @@ fn main() {
 
 fn handle_input(
 	input: Res<ButtonInput<KeyCode>>,
-	mut move_dir: Single<&mut MoveDirection, With<Player>>
+	mut player: Single<(&mut MoveDirection, &MoveState), With<Player>>
 ) {
-	let mut dir = Vec2::ZERO;
-	if input.pressed(KeyCode::KeyW) { dir.y += 1.0; } // Forward
-	if input.pressed(KeyCode::KeyS) { dir.y -= 1.0; } // Back
-	if input.pressed(KeyCode::KeyA) { dir.x -= 1.0; } // Left
-	if input.pressed(KeyCode::KeyD) { dir.x += 1.0; } // Right
+	let (mut move_dir, move_state) = player.into_inner();
+	let dir = match move_state.0 {
+		MovementState::Normal => {
+			[
+				(KeyCode::KeyW, Vec2::Y),
+				(KeyCode::KeyA, Vec2::NEG_X),
+				(KeyCode::KeyS, Vec2::NEG_Y),
+				(KeyCode::KeyD, Vec2::X),
+			]
+			.iter()
+			.filter_map(|(key, direction)| input.pressed(*key).then_some(*direction))
+			.sum::<Vec2>()
+		}
+		_ => {
+			Vec2::ZERO
+		}
+	};
+	
 	move_dir.0 = dir.normalize_or_zero();
 }
 
@@ -146,18 +187,32 @@ fn project_positions(
 	}
 }
 
-fn handle_impulse( // soon after the player movement is polished
-	mut impulsed: Query<(&mut Velocity, &mut Impulse)>
+fn handle_impulse(
+	mut commands: Commands,
+	mut impulsed: Query<(Entity, &mut Velocity, &mut Impulse)>,
+	time: Res<Time<Fixed>>,
 ) {
-	
+	let delta = time.delta_secs();
+	for (entity, mut velocity, mut impulse) in impulsed {
+		velocity.0 += impulse.0;
+		
+		let magnitude = impulse.0.length();
+		let decay = IMPULSE_DECAY_RATE * delta;
+		
+		if magnitude <= decay { // remove if its less than decay meaning its near ZERO
+			commands.entity(entity).remove::<Impulse>();
+		} else {
+			impulse.0 = impulse.0.normalize() * (magnitude - decay)
+		}
+	}
 }
 
-fn handle_move_velocity(
+fn handle_directional_move(
 	mut moveables: Query<(
-		&mut Velocity, &MoveDirection, &MoveSpeed
-	)>
+		&mut Velocity, &MoveDirection, &MoveSpeed, &MoveState
+	), Without<Impulse>> // directional move is not for entities impulsed
 ) {
-	for (mut velocity, direction, speed) in &mut moveables {
+	for (mut velocity, direction, speed, move_state) in &mut moveables {
 		velocity.0 = direction.0 * speed.0;
 	}
 }

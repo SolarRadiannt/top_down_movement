@@ -3,7 +3,7 @@
 #![allow(unused_imports)]
 #![allow(unused_mut)]
 
-use bevy::{math::VectorSpace, prelude::*, sprite_render::Material2d, input::*};
+use bevy::{input::*, math::VectorSpace, prelude::*, sprite_render::Material2d, ui::Pressed};
 
 const BALL_SPEED: f32 = 5.0;
 const BALL_SIZE: f32 = 6.0;
@@ -130,11 +130,14 @@ fn handle_input(
 	input: Res<ButtonInput<KeyCode>>,
 	mut move_dir: Single<&mut MoveDirection, With<Player>>
 ) {
-	let mut dir = Vec2::ZERO;
-	if input.pressed(KeyCode::KeyW) { dir.y += 1.0; } // Forward
-	if input.pressed(KeyCode::KeyS) { dir.y -= 1.0; } // Back
-	if input.pressed(KeyCode::KeyA) { dir.x -= 1.0; } // Left
-	if input.pressed(KeyCode::KeyD) { dir.x += 1.0; } // Right
+	let mut dir = [
+		(KeyCode::KeyW, Vec2::Y),
+		(KeyCode::KeyA, Vec2::NEG_X),
+		(KeyCode::KeyS, Vec2::NEG_Y),
+		(KeyCode::KeyD, Vec2::X),
+	]
+	.iter()
+.filter_map(|(key, direction) input.Pressed(key)|);
 	move_dir.0 = dir.normalize_or_zero();
 }
 

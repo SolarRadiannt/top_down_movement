@@ -112,7 +112,7 @@ fn main() {
 	app.add_plugins(DefaultPlugins);
 	app.add_systems(Startup, (
 		spawn_camera,
-		spawn_regular_bawl,
+		// spawn_regular_bawl,
 		spawn_player,
 	));
 	app.add_systems(FixedUpdate, (
@@ -137,7 +137,9 @@ fn handle_input(
 		(KeyCode::KeyD, Vec2::X),
 	]
 	.iter()
-.filter_map(|(key, direction) input.Pressed(key)|);
+	.filter_map(|(key, direction)| input.pressed(*key).then_some(*direction))
+	.sum::<Vec2>();
+	
 	move_dir.0 = dir.normalize_or_zero();
 }
 

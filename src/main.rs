@@ -53,9 +53,6 @@ struct Ball;
 #[derive(Component)]
 struct Player;
 
-
-
-
 fn spawn_camera(
 	mut commands: Commands,
 ) {
@@ -154,8 +151,6 @@ fn main() {
 	));
 	app.run();
 }
-
-
 
 fn handle_input(
 	input: Res<ButtonInput<KeyCode>>,

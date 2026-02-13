@@ -11,7 +11,7 @@ const BALL_SHAPE: Circle = Circle::new(BALL_SIZE);
 const BALL_COLOR: Color = Color::srgb(1.0, 0., 0.);
 const IMPULSE_DECAY_RATE: f32 = 2.5;
 
-const PLAYER_COLOR: Color = Color::srgb(0.0, 1.0, 0.0);
+const PLAYER_COLOR: Color = Color::srgb(0.0, 0.5, 1.0);
 
 #[derive(Component, Default)]
 #[require(Transform)]

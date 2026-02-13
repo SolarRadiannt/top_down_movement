@@ -1,0 +1,11 @@
+[package]
+name = "top_down_movement"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bevy = { version = "0.17", features = ["dynamic_linking"] }
+rand = "0.10"
+
+[profile.dev.package."*"]
+opt-level = 3

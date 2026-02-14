@@ -3,7 +3,7 @@
 #![allow(unused_imports)]
 #![allow(unused_mut)]
 
-const BALL_SPEED: f32 = 5.0;
+const BALL_SPEED: f32 = 2.0;
 const BALL_SIZE: f32 = 6.0;
 const BALL_SHAPE: Circle = Circle::new(BALL_SIZE);
 const BALL_COLOR: Color = Color::srgb(1.0, 0., 0.);
@@ -13,9 +13,15 @@ const PLAYER_COLOR: Color = Color::srgb(0.0, 0.5, 1.0);
 
 const MOVE_TO_REACHED_DIST: f32 = 5.0;
 
-use std::time::Duration;
-use bevy::{ecs::relationship::RelationshipSourceCollection, input::*, math::VectorSpace, prelude::*, sprite_render::Material2d, ui::Pressed};
-use rand::Rng;
+const WANDER_DURATION: f32 = 1.5;
+const SPAWN_DURATION:f32 = 0.1;
+
+const WANDER_RANGE: RangeInclusive<f32> = -100.0..=100.0;
+const SPAWN_RANGE: RangeInclusive<f32> = -50.0..=50.0;
+
+use std::{ops::RangeInclusive, time::Duration};
+use bevy::{ecs::{entity, relationship::*}, input::*, math::*, pbr::resources, prelude::*, sprite_render::*, ui::*};
+use rand::prelude::*;
 
 #[derive(PartialEq)]
 enum MovementState {
@@ -46,17 +52,24 @@ struct Impulse(Vec2);
 struct MoveState(MovementState);
 
 #[derive(Component)]
+struct WanderTimer(Timer);
+
+#[derive(Component)]
 #[require(
 	Position,
 	Velocity = Velocity(Vec2::ZERO),
 	MoveDirection = MoveDirection(Vec2::ZERO),
 	MoveSpeed = MoveSpeed(BALL_SPEED),
 	MoveState = MoveState(MovementState::Normal),
+	WanderTimer = WanderTimer(Timer::from_seconds(WANDER_DURATION, TimerMode::Repeating))
 )]
 struct Ball;
 
 #[derive(Component)]
 struct Player;
+
+#[derive(Resource)]
+struct SpawnTimer(Timer);
 
 fn spawn_camera(
 	mut commands: Commands,
@@ -109,6 +122,7 @@ fn spawn_player(
 }
 
 fn spawn_regular_bawl(
+	position: Vec2,
 	mut commands: Commands,
 	mut meshes: ResMut<Assets<Mesh>>,
 	mut materials: ResMut<Assets<ColorMaterial>>,
@@ -120,7 +134,7 @@ fn spawn_regular_bawl(
 		mesh,
 		material,
 		|_| { },
-		Some(Vec2::ZERO),
+		Some(position),
 	);
 }
 
@@ -135,7 +149,9 @@ fn impulse(
 		.entry::<MoveState>()
 		.and_modify(|mut move_state| {
 			let MoveState(ref mut state) = *move_state;
-			*state = MovementState::Knockbacked;
+			if *state == MovementState::Normal {
+				*state = MovementState::Knockbacked;
+			}
 		});
 }
 
@@ -148,14 +164,33 @@ fn main() {
 		spawn_player,
 	));
 	app.add_systems(FixedUpdate, (
-		handle_input.before(handle_directional_move),
-		handle_move_to.before(handle_directional_move),
+		bawl_npc_spawn,
+		npc_wander,
+		project_positions,
+		handle_input,
+		handle_move_to,
 		handle_directional_move,
-		handle_impulse.before(handle_move),
-		handle_move.after(handle_directional_move),
-		project_positions.after(handle_move),
-	));
+		handle_impulse,
+		handle_move,
+	).chain());
+	app.insert_resource(SpawnTimer(Timer::from_seconds(SPAWN_DURATION, TimerMode::Repeating)));
 	app.run();
+}
+
+fn bawl_npc_spawn(
+	commands: Commands,
+	time: Res<Time<Fixed>>,
+	mut spawn_timer: ResMut<SpawnTimer>,
+	mut meshes: ResMut<Assets<Mesh>>,
+	mut materials: ResMut<Assets<ColorMaterial>>
+) {
+	spawn_timer.0.tick(time.delta());
+	if spawn_timer.0.just_finished() {
+		let position = Vec2::new(
+			rand::thread_rng().gen_range(SPAWN_RANGE),
+			rand::thread_rng().gen_range(SPAWN_RANGE));
+		spawn_regular_bawl(position, commands, meshes, materials);
+	}
 }
 
 fn handle_input(
@@ -183,10 +218,36 @@ fn handle_input(
 	move_dir.0 = dir.normalize_or_zero();
 }
 
-fn non_player_move(
-	
+fn move_to(
+	mut commands: &mut Commands,
+	entity: Entity,
+	goal: Vec2
 ) {
-	
+	commands.entity(entity)
+		.entry::<MoveToPosition>()
+		.and_modify(move |mut move_to| move_to.0 = goal)
+		.or_insert(MoveToPosition(goal));
+}
+
+fn npc_wander(
+	mut commands: Commands,
+	time: Res<Time<Fixed>>,
+	to_move: Query<
+		(Entity, &Position, &mut WanderTimer),
+		(With<Ball>, Without<Player>, Without<MoveToPosition>)
+	>,
+) {
+	for (entity, current_position, mut wander_timer) in to_move {
+		wander_timer.0.tick(time.delta());
+		if wander_timer.0.just_finished() {
+			let offset = Vec2::new(
+				rand::thread_rng().gen_range(WANDER_RANGE),
+				rand::thread_rng().gen_range(WANDER_RANGE));
+			
+			let goal = current_position.0 + offset;
+			move_to(&mut commands, entity, goal);
+		}
+	}
 }
 
 fn project_positions(
@@ -258,7 +319,7 @@ fn handle_move(
 	moveables: Query<(
 		&mut Position, &Velocity
 	)>
-){
+) {
 	for (mut position, velocity) in moveables {
 		position.0 += velocity.0
 	}

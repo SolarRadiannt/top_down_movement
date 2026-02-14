@@ -3,10 +3,6 @@
 #![allow(unused_imports)]
 #![allow(unused_mut)]
 
-use std::time::Duration;
-
-use bevy::{ecs::relationship::RelationshipSourceCollection, input::*, math::VectorSpace, prelude::*, sprite_render::Material2d, ui::Pressed};
-
 const BALL_SPEED: f32 = 5.0;
 const BALL_SIZE: f32 = 6.0;
 const BALL_SHAPE: Circle = Circle::new(BALL_SIZE);
@@ -15,11 +11,20 @@ const IMPULSE_DECAY_RATE: f32 = 5.0;
 
 const PLAYER_COLOR: Color = Color::srgb(0.0, 0.5, 1.0);
 
+const MOVE_TO_REACHED_DIST: f32 = 5.0;
+
+use std::time::Duration;
+use bevy::{ecs::relationship::RelationshipSourceCollection, input::*, math::VectorSpace, prelude::*, sprite_render::Material2d, ui::Pressed};
+use rand::Rng;
+
 #[derive(PartialEq)]
 enum MovementState {
 	Normal,
 	Knockbacked,
 }
+
+#[derive(Component)]
+struct  MoveToPosition(Vec2);
 
 #[derive(Component, Default)]
 #[require(Transform)]
@@ -143,9 +148,10 @@ fn main() {
 		spawn_player,
 	));
 	app.add_systems(FixedUpdate, (
-		handle_input,
-		handle_impulse.before(handle_move),
+		handle_input.before(handle_directional_move),
+		handle_move_to.before(handle_directional_move),
 		handle_directional_move,
+		handle_impulse.before(handle_move),
 		handle_move.after(handle_directional_move),
 		project_positions.after(handle_move),
 	));
@@ -175,6 +181,12 @@ fn handle_input(
 	};
 	
 	move_dir.0 = dir.normalize_or_zero();
+}
+
+fn non_player_move(
+	
+) {
+	
 }
 
 fn project_positions(
@@ -207,6 +219,27 @@ fn handle_impulse(
 			}
 		} else {
 			impulse.0 = impulse.0.normalize() * (magnitude - decay)
+		}
+	}
+}
+
+fn handle_move_to( // for npcs bawls
+	mut commands: Commands,
+	moving_w_move_to: Query<
+		(Entity, &Position, &mut MoveDirection, &MoveToPosition),
+		Without<Player> // incompatible with player for now
+	>,
+) {
+	for (entity, position, mut move_direction, move_to_pos) in moving_w_move_to {
+		let resultant = move_to_pos.0 - position.0;
+		let distance = resultant.length();
+		
+		if distance <= MOVE_TO_REACHED_DIST {
+			commands.entity(entity).remove::<MoveToPosition>();
+			move_direction.0 = Vec2::ZERO;
+		} else {
+			let direction = resultant.normalize();
+			move_direction.0 = direction;
 		}
 	}
 }

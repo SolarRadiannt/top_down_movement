@@ -16,11 +16,12 @@ const MOVE_TO_REACHED_DIST: f32 = 5.0;
 const WANDER_DURATION: f32 = 1.5;
 const SPAWN_DURATION:f32 = 0.1;
 
-const WANDER_RANGE: RangeInclusive<f32> = -100.0..=100.0;
-const SPAWN_RANGE: RangeInclusive<f32> = -50.0..=50.0;
+const WANDER_RANGE: RangeInclusive<f32> = -200.0..=200.0;
+const SPAWN_RANGE: RangeInclusive<f32> = -500.0..=500.0;
 
 use std::{ops::RangeInclusive, time::Duration};
 use bevy::{ecs::{entity, relationship::*, system::SystemParam}, input::*, math::*, pbr::resources, prelude::*, sprite_render::*, ui::*};
+use bevy_pancam::*;
 use rand::prelude::*;
 
 #[derive(PartialEq)]
@@ -100,7 +101,19 @@ fn spawn_camera(
 	// 	Camera2d,
 	// 	Transform::from_xyz(0., 0., 0.)
 	// ));
-	commands.spawn(Camera2d);
+	commands.spawn((
+		Camera2d,
+		PanCam {
+			grab_buttons: vec![MouseButton::Middle],
+			move_keys: DirectionKeys {      // the keyboard buttons used to move the camera
+				up:    vec![KeyCode::ArrowUp], // initalize the struct like this or use the provided methods for
+				down:  vec![KeyCode::ArrowDown], // common key combinations
+				left:  vec![KeyCode::ArrowLeft],
+				right: vec![KeyCode::ArrowRight],
+			},
+    		..default()
+		},
+	));
 }
 
 fn spawn_bawl<F>(
@@ -112,7 +125,7 @@ fn spawn_bawl<F>(
 ) -> Entity
 	where F: FnOnce(&mut EntityCommands)
 {
-	println!("Spawning bawls...");
+	// println!("Spawning bawls...");
 	let mut commands = ball_spawn.commands;
 	let mesh = ball_spawn.meshes.add(shape);
 	let material = ball_spawn.materials.add(color);
@@ -210,6 +223,7 @@ fn impulse(
 fn main() {
 	let mut app = App::new();
 	app.add_plugins(DefaultPlugins);
+	app.add_plugins(PanCamPlugin);
 	app.add_systems(Startup, (
 		spawn_camera,
 		spawn_player,
@@ -248,6 +262,7 @@ fn count_bawl_spawned(
 ) {
 	b_count.0 += 1;
 }
+
 fn bawl_npc_spawn(
 	time: Res<Time<Fixed>>,
 	mut spawn_timer: ResMut<SpawnTimer>,
@@ -288,7 +303,7 @@ fn handle_input(
 }
 
 fn move_to(
-	mut commands: Commands,
+	commands: &mut Commands,
 	entity: Entity,
 	goal: Vec2
 ) {

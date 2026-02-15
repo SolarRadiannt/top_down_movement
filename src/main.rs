@@ -6,8 +6,8 @@
 const BALL_SPEED: f32 = 2.0;
 const BALL_SIZE: f32 = 6.0;
 const BALL_SHAPE: Circle = Circle::new(BALL_SIZE);
-const BALL_COLOR: Color = Color::srgb(1.0, 0., 0.);
-const IMPULSE_DECAY_RATE: f32 = 5.0;
+const REGULAR_COLOR: Color = Color::srgb(1.0, 0., 0.);
+const IMPULSE_DECAY_RATE: f32 = 50.0;
 
 const PLAYER_COLOR: Color = Color::srgb(0.0, 0.5, 1.0);
 
@@ -20,7 +20,7 @@ const WANDER_RANGE: RangeInclusive<f32> = -100.0..=100.0;
 const SPAWN_RANGE: RangeInclusive<f32> = -50.0..=50.0;
 
 use std::{ops::RangeInclusive, time::Duration};
-use bevy::{ecs::{entity, relationship::*}, input::*, math::*, pbr::resources, prelude::*, sprite_render::*, ui::*};
+use bevy::{ecs::{entity, relationship::*, system::SystemParam}, input::*, math::*, pbr::resources, prelude::*, sprite_render::*, ui::*};
 use rand::prelude::*;
 
 #[derive(PartialEq)]
@@ -71,6 +71,28 @@ struct Player;
 #[derive(Resource)]
 struct SpawnTimer(Timer);
 
+#[derive(Resource)]
+struct BawlCount(u32);
+
+#[derive(SystemParam)]
+struct BallSpawnParams<'w, 's> {
+	commands: Commands<'w, 's>,
+	meshes: ResMut<'w, Assets<Mesh>>,
+	materials: ResMut<'w, Assets<ColorMaterial>>,
+}
+
+#[derive(Component)]
+struct Counter;
+
+#[derive(Event)]
+struct BawlSpawnEvent(Entity);
+
+#[derive(EntityEvent)]
+struct BawlTouchedEvent {
+	entity: Entity,
+	touched: Entity,
+}
+
 fn spawn_camera(
 	mut commands: Commands,
 ) {
@@ -82,15 +104,18 @@ fn spawn_camera(
 }
 
 fn spawn_bawl<F>(
-	commands: &mut Commands,
-	mesh: Handle<Mesh>,
-	material: Handle<ColorMaterial>,
-	adjust_fc: F,
 	position: Option<Vec2>,
+	color: Color,
+	shape: Circle,
+	adjust_fc: F,
+	mut ball_spawn: BallSpawnParams,
 ) -> Entity
 	where F: FnOnce(&mut EntityCommands)
 {
 	println!("Spawning bawls...");
+	let mut commands = ball_spawn.commands;
+	let mesh = ball_spawn.meshes.add(shape);
+	let material = ball_spawn.materials.add(color);
 	
 	let mut entity_cmds = commands.spawn((
 		Ball,
@@ -98,44 +123,71 @@ fn spawn_bawl<F>(
 		MeshMaterial2d(material),
 		Position(position.unwrap_or(Vec2::ZERO)),
 	));
+	let entity_id = entity_cmds.id();
 	adjust_fc(&mut entity_cmds);
-	entity_cmds.id()
+	drop(entity_cmds);
+	
+	commands.trigger(BawlSpawnEvent(entity_id));
+	entity_id
 }
 
 fn spawn_player(
-	mut commands: Commands,
-	mut meshes: ResMut<Assets<Mesh>>,
-	mut materials: ResMut<Assets<ColorMaterial>>,
+	ball_spawn: BallSpawnParams
 ) {
-	let mesh = meshes.add(BALL_SHAPE);
-	let material = materials.add(PLAYER_COLOR);
-	
 	spawn_bawl(
-		&mut commands,
-		mesh,
-		material,
+		Some(Vec2::ZERO),
+		PLAYER_COLOR,
+		BALL_SHAPE,
 		|cmds| {
 			cmds.insert(Player);
 		},
-		Some(Vec2::ZERO),
+		ball_spawn,
 	);
 }
 
 fn spawn_regular_bawl(
 	position: Vec2,
-	mut commands: Commands,
-	mut meshes: ResMut<Assets<Mesh>>,
-	mut materials: ResMut<Assets<ColorMaterial>>,
+	ball_spawn: BallSpawnParams,
 ) {
-	let mesh = meshes.add(BALL_SHAPE);
-	let material = materials.add(BALL_COLOR);
 	spawn_bawl(
-		&mut commands,
-		mesh,
-		material,
-		|_| { },
 		Some(position),
+		REGULAR_COLOR,
+		BALL_SHAPE,
+		|_| { },
+		ball_spawn,
 	);
+}
+
+fn spawn_counter(mut commands: Commands,) {
+	let container = Node {
+		width: percent(100.0),
+		height: percent(50.0),
+		justify_content: JustifyContent::Center,
+		..default()
+	};
+	
+	let header = Node {
+		width: px(200.0),
+		height: px(100.0),
+		..default()
+	};
+	
+	let counter = (
+		Counter,
+		Text::new("0"),
+		TextFont::from_font_size(50.0),
+		TextColor(Color::WHITE),
+		TextLayout::new_with_justify(Justify::Center),
+		Node {
+			position_type: PositionType::Absolute,
+			..default()
+		}
+	);
+	
+	commands.spawn((
+			container,
+			children![(header, children![counter])]
+		));
 }
 
 fn impulse(
@@ -160,10 +212,11 @@ fn main() {
 	app.add_plugins(DefaultPlugins);
 	app.add_systems(Startup, (
 		spawn_camera,
-		// spawn_regular_bawl,
 		spawn_player,
+		spawn_counter,
 	));
 	app.add_systems(FixedUpdate, (
+		update_ui_count,
 		bawl_npc_spawn,
 		npc_wander,
 		project_positions,
@@ -174,22 +227,38 @@ fn main() {
 		handle_move,
 	).chain());
 	app.insert_resource(SpawnTimer(Timer::from_seconds(SPAWN_DURATION, TimerMode::Repeating)));
+	app.insert_resource(BawlCount(0));
+	app.add_observer(count_bawl_spawned);
+	
 	app.run();
 }
 
+fn update_ui_count(
+	mut counter: Single<&mut Text, With<Counter>>,
+	count: Res<BawlCount>,
+) {
+	if count.is_changed() {
+		counter.0 = count.0.to_string();
+	}
+}
+
+fn count_bawl_spawned(
+	event: On<BawlSpawnEvent>,
+	mut b_count: ResMut<BawlCount>
+) {
+	b_count.0 += 1;
+}
 fn bawl_npc_spawn(
-	commands: Commands,
 	time: Res<Time<Fixed>>,
 	mut spawn_timer: ResMut<SpawnTimer>,
-	mut meshes: ResMut<Assets<Mesh>>,
-	mut materials: ResMut<Assets<ColorMaterial>>
+	ball_spawn: BallSpawnParams,
 ) {
 	spawn_timer.0.tick(time.delta());
 	if spawn_timer.0.just_finished() {
 		let position = Vec2::new(
 			rand::thread_rng().gen_range(SPAWN_RANGE),
 			rand::thread_rng().gen_range(SPAWN_RANGE));
-		spawn_regular_bawl(position, commands, meshes, materials);
+		spawn_regular_bawl(position, ball_spawn);
 	}
 }
 
@@ -265,7 +334,7 @@ fn handle_impulse(
 ) {
 	let delta = time.delta_secs();
 	for (entity, mut velocity, mut impulse, mut move_state) in impulsed {
-		velocity.0 += impulse.0;
+		velocity.0 = impulse.0;
 		
 		let magnitude = impulse.0.length();
 		let decay = IMPULSE_DECAY_RATE * delta;

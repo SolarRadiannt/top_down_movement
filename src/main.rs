@@ -6,7 +6,7 @@
 const BALL_SPEED: f32 = 2.0;
 const BALL_SIZE: f32 = 6.0;
 const BALL_SHAPE: Circle = Circle::new(BALL_SIZE);
-const REGULAR_COLOR: Color = Color::srgb(1.0, 0., 0.);
+const REGULAR_COLOR: Color = Color::srgb(1.0, 0.0, 0.0);
 const IMPULSE_DECAY_RATE: f32 = 50.0;
 
 const PLAYER_COLOR: Color = Color::srgb(0.0, 0.5, 1.0);
@@ -264,7 +264,7 @@ fn bawl_npc_spawn(
 
 fn handle_input(
 	input: Res<ButtonInput<KeyCode>>,
-	mut player: Single<(&mut MoveDirection, &MoveState), With<Player>>
+	player: Single<(&mut MoveDirection, &MoveState), With<Player>>
 ) {
 	let (mut move_dir, move_state) = player.into_inner();
 	let dir = match move_state.0 {
@@ -288,7 +288,7 @@ fn handle_input(
 }
 
 fn move_to(
-	mut commands: &mut Commands,
+	mut commands: Commands,
 	entity: Entity,
 	goal: Vec2
 ) {
@@ -375,11 +375,11 @@ fn handle_move_to( // for npcs bawls
 }
 
 fn handle_directional_move(
-	mut moveables: Query<(
-		&mut Velocity, &MoveDirection, &MoveSpeed, &MoveState
+	moveables: Query<(
+		&mut Velocity, &MoveDirection, &MoveSpeed
 	), Without<Impulse>> // directional move is not for entities impulsed
 ) {
-	for (mut velocity, direction, speed, move_state) in &mut moveables {
+	for (mut velocity, direction, speed) in moveables {
 		velocity.0 = direction.0 * speed.0;
 	}
 }

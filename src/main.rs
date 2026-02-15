@@ -104,7 +104,7 @@ fn spawn_camera(
 	commands.spawn((
 		Camera2d,
 		PanCam {
-			grab_buttons: vec![MouseButton::Middle],
+			grab_buttons: vec![MouseButton::Middle, MouseButton::Right],
 			move_keys: DirectionKeys {      // the keyboard buttons used to move the camera
 				up:    vec![KeyCode::ArrowUp], // initalize the struct like this or use the provided methods for
 				down:  vec![KeyCode::ArrowDown], // common key combinations

@@ -20,7 +20,7 @@ const WANDER_RANGE: RangeInclusive<f32> = -200.0..=200.0;
 const SPAWN_RANGE: RangeInclusive<f32> = -500.0..=500.0;
 
 use std::{ops::RangeInclusive, time::Duration};
-use bevy::{ecs::{entity, relationship::*, system::SystemParam}, input::*, math::*, pbr::resources, prelude::*, sprite_render::*, ui::*};
+use bevy::{ecs::{entity, relationship::*, system::SystemParam}, input::*, math::*, prelude::*, render::mesh::MeshRenderAssetPlugin};
 use bevy_pancam::*;
 use rand::prelude::*;
 
@@ -222,8 +222,10 @@ fn impulse(
 
 fn main() {
 	let mut app = App::new();
-	app.add_plugins(DefaultPlugins);
-	app.add_plugins(PanCamPlugin);
+	app.add_plugins((
+		DefaultPlugins,
+		PanCamPlugin,
+	));
 	app.add_systems(Startup, (
 		spawn_camera,
 		spawn_player,

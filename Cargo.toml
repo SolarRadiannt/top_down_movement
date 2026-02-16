@@ -4,16 +4,16 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bevy = { version = "0.17", features = ["dynamic_linking"] }
+bevy = "0.17"
 rand = "0.8"
 bevy_pancam = "0.19.0"
 
 [profile.dev.package."*"]
 opt-level = 3
-[profile.release]
 
-opt-level = "z"           # Optimize for smallest size
-lto = true                # Full Link Time Optimization
-codegen-units = 1         # Optimize across all crates
-strip = "symbols"         # Remove all debug symbols
-panic = "abort"           # Disable stack unwinding
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+opt-level = "z"
+panic = "abort"

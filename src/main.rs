@@ -3,40 +3,70 @@
 #![allow(unused_imports)]
 #![allow(unused_mut)]
 
+const fn get_rect_corners(rect: Rect) -> [Vec2; 4] {
+	[
+		rect.min,							// bottom‑left
+		Vec2::new(rect.min.x, rect.max.y),	// top‑left
+		rect.max,							// top‑right
+		Vec2::new(rect.max.x, rect.min.y),	// bottom‑right
+	]
+}
+const fn rect_from_center_size(center: Vec2, size: Vec2) -> Rect {
+	let half_size = Vec2::new(size.x / 2., size.y / 2.);
+	Rect {
+		min: Vec2::new(center.x - half_size.x, center.y - half_size.y),
+		max: Vec2::new(center.x + half_size.x, center.y + half_size.y)
+	}
+}
+const WORLD_SIZE: f32 = 10_000.0;
+const WORLD_CENTER: Vec2 = Vec2::ZERO;
+const WORLD_BOUNDARY: Rect = rect_from_center_size(WORLD_CENTER, Vec2::splat(WORLD_SIZE));
+
+const WORLD_CORNERS: [Vec2; 4] = get_rect_corners(WORLD_BOUNDARY);
+const BOUNDARY_COLOR: Color = Color::srgb(1.0, 0.0, 0.0);
+const MAX_QUAD_DEPTH: i32 = 10;
+
+const PLAYER_SPEED: f32 = 5.0;
 const BALL_SPEED: f32 = 3.0;
+
 const BALL_SIZE: f32 = 9.0;
 const BALL_SHAPE: Circle = Circle::new(BALL_SIZE);
 const IMPULSE_DECAY_RATE: f32 = 20.0;
 
-const REGULAR_COLOR: Color = Color::srgb(1.0, 0.0, 0.0);
+const REGULAR_COLOR: Color = Color::srgb(0.7, 0.0, 0.0);
 const SHOVER_COLOR: Color = Color::srgb(0.8, 0.0, 0.9);
 const PLAYER_COLOR: Color = Color::srgb(0.0, 0.5, 1.0);
 
 const MOVE_TO_REACHED_DIST: f32 = 3.5;
 
 const WANDER_DURATION: f32 = 1.5;
-const SPAWN_DURATION:f32 = 0.5;
+const SPAWN_DURATION:f32 = 0.1;
 const SHOVE_POWER: f32 = 10.0;
 
-const WANDER_RANGE: RangeInclusive<f32> = -200.0..=200.0;
-const SPAWN_RANGE: RangeInclusive<f32> = -300.0..=300.0;
+const WANDER_RANGE: RangeInclusive<f32> = -300.0..=300.0;
+const SPAWN_RANGE: RangeInclusive<f32> = -5_000.0..=5_000.0;
 
-use std::{ops::RangeInclusive, time::Duration};
-use bevy::{ecs::{entity, relationship::*, system::SystemParam}, input::*, math::*, prelude::*, render::mesh::MeshRenderAssetPlugin};
+use std::{ops::RangeInclusive, str::Lines, time::Duration};
+use bevy::{asset::uuid::timestamp::context, ecs::{entity, relationship::*, system::SystemParam}, input::{mouse::MouseButtonInput, *}, math::*, prelude::*, render::mesh::MeshRenderAssetPlugin, ui_render::shader_flags::CORNERS, window::PrimaryWindow};
 use bevy_pancam::*;
 use rand::prelude::*;
 use std::collections::HashMap;
-use bevy_quadtree::{
-	QuadTreePlugin,
-	CollisionCircle,
-	CollisionRect,
-};
+use bevy_cursor::prelude::*;
+
+/*
+	things:
+	ADD QUADTREE AND REPLACE THE NAIVE BOUNDING DETECTION!!!!
+ */
+
+// ---[ enums ]---
 
 #[derive(PartialEq)]
 enum MovementState {
 	Normal,
 	Knockbacked,
 }
+
+// ---[ components ]---
 
 #[derive(Component)]
 struct  MoveToPosition(Vec2);
@@ -64,9 +94,9 @@ struct MoveState(MovementState);
 struct WanderTimer(Timer);
 
 #[derive(Component)]
-struct Bounder(Circle);
+struct CircleBounds(Circle);
 
-#[derive(Component)]//		bawl, direction fron center
+#[derive(Component)]
 struct BoundedEntities(Vec<Entity>);
 
 #[derive(Component)]
@@ -77,7 +107,7 @@ struct BoundedEntities(Vec<Entity>);
 	MoveSpeed = MoveSpeed(BALL_SPEED),
 	MoveState = MoveState(MovementState::Normal),
 	WanderTimer = WanderTimer(Timer::from_seconds(WANDER_DURATION, TimerMode::Repeating)),
-	Bounder = Bounder(BALL_SHAPE),
+	CircleBounds = CircleBounds(BALL_SHAPE),
 	BoundedEntities = BoundedEntities(Vec::default()),
 )]
 struct Ball;
@@ -88,11 +118,113 @@ struct Player;
 #[derive(Component)]
 struct Shover;
 
+#[derive(Component)]
+struct Counter;
+
+// ---[ resources ]---
+
 #[derive(Resource)]
 struct SpawnTimer(Timer);
 
 #[derive(Resource)]
 struct BawlCount(u32);
+
+
+struct QuadTree {
+	boundary: Rect,
+	capacity: u32,
+	points: Vec<Vec2>,
+	corners: [Vec2; 4],
+	
+	north_east: Option<Box<QuadTree>>, north_west: Option<Box<QuadTree>>,
+	south_east: Option<Box<QuadTree>>, south_west: Option<Box<QuadTree>>,
+	divided: bool,
+}
+impl QuadTree {
+	fn new(boundary: Rect, capacity: u32) -> Self {
+		Self {
+			boundary: boundary,
+			capacity: capacity,
+			points: Vec::default(),
+			corners: get_rect_corners(boundary),
+			
+			south_west: None,
+			south_east: None,
+			north_west: None,
+			north_east: None,
+			divided: false,
+		}
+	}
+	
+	fn subdivide(&mut self) {
+		println!("qt subdivided");
+		self.divided = true;
+		let boundary = self.boundary;
+		let center = boundary.center();
+		let root_size = boundary.half_size() / 2.0;
+		let capacity = self.capacity;
+		
+		let x = root_size.x;
+		let y = root_size.y;
+		
+		
+		let ne = Rect::from_center_half_size(center + Vec2::new(x, y), root_size);
+		self.north_east = Some(Box::new(QuadTree::new(ne, capacity)));
+		
+		let nw = Rect::from_center_half_size(center - Vec2::new(x, -y), root_size);
+		self.north_west = Some(Box::new(QuadTree::new(nw, capacity)));
+		
+		let se = Rect::from_center_half_size(center + Vec2::new(x, -y), root_size);
+		self.south_east = Some(Box::new(QuadTree::new(se, capacity)));
+		
+		let sw = Rect::from_center_half_size(center - Vec2::new(x, y), root_size);
+		self.south_west = Some(Box::new(QuadTree::new(sw, capacity)));
+	}
+	
+	fn insert(&mut self, point: Vec2) -> bool {
+		if !self.boundary.contains(point) { println!("point not within bounds"); return false; };
+		print!("{} point inserted, current len: {}, capacity: {}", point, self.points.len(), self.capacity);
+		if self.points.len() < self.capacity as usize {
+			self.points.push(point);
+			true
+		} else {
+			if !self.divided { self.subdivide() };
+			
+			let children = [
+				self.north_east.as_mut(), self.north_west.as_mut(),
+				self.south_east.as_mut(), self.south_west.as_mut(),
+			];
+			for child_opt in children {
+				if let Some(child) = child_opt {
+					if child.insert(point) {
+						return true;
+					}
+				}
+			};
+			false
+		}
+	}
+	
+	fn draw(&self, gizmos: &mut Gizmos) {
+		draw_rect(gizmos, self.corners, Color::WHITE);
+		if self.divided {
+			let children = [
+				&self.north_east, &self.north_west,
+				&self.south_east, &self.south_west,
+			];
+			for child_opt in children {
+				if let Some(child) = child_opt {
+					child.draw(gizmos);
+				}
+			};
+		}
+	}
+}
+
+#[derive(Resource)]
+struct SolQT(QuadTree);
+
+// ---[ system params ]---
 
 #[derive(SystemParam)]
 struct BallSpawnParams<'w, 's> {
@@ -101,17 +233,22 @@ struct BallSpawnParams<'w, 's> {
 	materials: ResMut<'w, Assets<ColorMaterial>>,
 }
 
-#[derive(Component)]
-struct Counter;
+// ---[ Events ]---
 
 #[derive(Event)]
 struct BawlSpawnEvent(Entity);
 
+#[derive(Event)]
+struct BawlRemovedEvent(Entity);
+
 #[derive(EntityEvent)]
-struct EntityBounded {
+struct EntityMoved {
 	entity: Entity,
-	bounded: Entity,
+	old_pos: Vec2,
+	new_pos: Vec2,
 }
+
+// --- setup fcs ---
 
 fn spawn_camera(
 	mut commands: Commands,
@@ -160,6 +297,7 @@ fn spawn_bawl<F>(
 	drop(entity_cmds);
 	
 	commands.trigger(BawlSpawnEvent(entity_id));
+	// println!("bawl spawned");
 	entity_id
 }
 
@@ -167,10 +305,14 @@ fn spawn_player(
 	ball_spawn: BallSpawnParams
 ) {
 	spawn_bawl(
-		Some(Vec2::ZERO),
+		None,
 		PLAYER_COLOR,
 		BALL_SHAPE,
-		|cmds| { cmds.insert(Player); },
+		|cmds| {
+			cmds.insert(Player)
+				.entry::<MoveSpeed>()
+				.and_modify(|mut speed| speed.0 = PLAYER_SPEED);
+		},
 		ball_spawn,
 	);
 }
@@ -233,11 +375,13 @@ fn spawn_counter(mut commands: Commands,) {
 		));
 }
 
+// ---[ helpers ]---
+
 fn impulse(
 	mut entity_cmd: EntityCommands,
 	force: Vec2,
 ) {
-	println!("impulsed");
+	info!("impulsed with the force {}", force);
 	entity_cmd
 		.insert(Impulse(force))
 		.entry::<MoveState>()
@@ -249,42 +393,130 @@ fn impulse(
 		});
 }
 
+fn move_to(
+	commands: &mut Commands,
+	entity: Entity,
+	goal: Vec2
+) {
+	commands.entity(entity)
+		.entry::<MoveToPosition>()
+		.and_modify(move |mut move_to| move_to.0 = goal)
+		.or_insert(MoveToPosition(goal));
+}
+
+fn draw_rect(
+	gizmos: &mut Gizmos,
+	corners: [Vec2; 4],
+	color: Color,
+) {
+	for i in 0..4 {
+		let start = corners[i];
+		let end = corners[(i + 1) % 4];
+		gizmos.line_2d(start, end, color);
+	}
+}
+
+// vvv ==> [ MAIN ] <== vvv
 fn main() {
 	let mut app = App::new();
 	app.add_plugins((
 		DefaultPlugins,
 		PanCamPlugin,
-		
-		// QuadTreePlugin::<(
-		// 	(CollisionCircle, GlobalTransform),
-		// 	(CollisionRect, (GlobalTransform, Sprite)),
-		// ), 40, 8, 100, 100, 0, 0, 20, 114514>::default()
+		TrackCursorPlugin,
 	));
 	
 	app.add_systems(Startup, (
 		spawn_camera,
-		spawn_player,
+		// spawn_player,
 		spawn_counter,
 	));
 	
 	app.add_systems(FixedUpdate, (
+		spawn_bawls_on_click,
+		
+		draw_qt,
+		// draw_world_boundary,
 		update_ui_count,
-		handle_npc_spawn,
-		handle_npc_wander,
+		
+		// handle_npc_spawn,
+		// handle_npc_wander,
 		handle_position_projection,
-		handle_input,
-		handle_bounds,
-		handle_move_to,
-		handle_shoving,
-		handle_impulse,
-		handle_directional_move,
-		handle_move,
+		// handle_input,
+		// handle_bounds,
+		// handle_move_to,
+		// handle_shoving,
+		// handle_impulse,
+		// handle_velocity,
+		// handle_move,
 	).chain());
 	app.insert_resource(SpawnTimer(Timer::from_seconds(SPAWN_DURATION, TimerMode::Repeating)));
 	app.insert_resource(BawlCount(0));
+	app.insert_resource(SolQT(QuadTree::new(WORLD_BOUNDARY, 5)));
 	app.add_observer(count_bawl_spawned);
+	app.add_observer(count_bawl_removed);
+	app.add_observer(handle_world_boundary);
+	app.add_observer(insert_new_point_to_qt);
 	
 	app.run();
+}
+// ^^^ ==> [ MAIN ] <== ^^^
+
+// ---[ systems ]---
+
+fn spawn_bawls_on_click(
+	mut ball_spawn: BallSpawnParams,
+	mouse_input: Res<ButtonInput<MouseButton>>,
+	cursor: Res<CursorLocation>,
+	camera_query: Query<(&Camera, &GlobalTransform)>,
+) {
+	if !mouse_input.pressed(MouseButton::Left) { return; }
+	
+	let Some(cursor_pos) = cursor.position() else { return };
+	
+	// Get the camera (often the first one, but better to use a marker)
+	let (camera, camera_transform) = match camera_query.single() {
+		Ok(camera) => camera,
+		Err(e) => {
+			error!("Camera query failed: {:?}", e);
+			return;
+		}
+	};
+	
+	// Use Result handling (if let Ok) instead of Option
+	if let Ok(world_pos) = camera.viewport_to_world_2d(camera_transform, cursor_pos) {
+		spawn_regular_bawl(world_pos, ball_spawn);
+	} else {
+		// Optionally log the conversion error
+		warn!("Failed to convert cursor position to world coordinates");
+	}
+}
+
+
+fn draw_qt(
+	mut gizmos: Gizmos,
+	qt: Res<SolQT>,
+) {
+	qt.0.draw(&mut gizmos);
+}
+
+fn draw_world_boundary(
+	mut gizmos: Gizmos
+) {
+	draw_rect(&mut gizmos, WORLD_CORNERS, BOUNDARY_COLOR);
+}
+
+fn handle_world_boundary(
+	event: On<EntityMoved>,
+	mut commands: Commands,
+) {
+	let went_out = !WORLD_BOUNDARY.contains(event.new_pos);
+	if went_out {
+		let e_id = commands.entity(event.entity).id();
+		
+		commands.trigger(BawlRemovedEvent(e_id));
+		commands.entity(event.entity).despawn();
+		println!("entity despawned")
+	}
 }
 
 fn update_ui_count(
@@ -298,9 +530,27 @@ fn update_ui_count(
 
 fn count_bawl_spawned(
 	event: On<BawlSpawnEvent>,
-	mut b_count: ResMut<BawlCount>
+	mut b_count: ResMut<BawlCount>,
 ) {
 	b_count.0 += 1;
+}
+
+fn insert_new_point_to_qt(
+	event: On<BawlSpawnEvent>,
+	mut commands: Commands,
+	positions: Query<&Position>,
+	mut qt: ResMut<SolQT>,
+) {
+	if let Ok(point) = positions.get(event.0) {
+		qt.0.insert(point.0);
+	}
+}
+
+fn count_bawl_removed(
+	event: On<BawlRemovedEvent>,
+	mut b_count: ResMut<BawlCount>,
+) {
+	b_count.0 -= 1;
 }
 
 fn handle_npc_spawn(
@@ -321,17 +571,6 @@ fn handle_npc_spawn(
 		}
 		
 	}
-}
-
-fn move_to(
-	commands: &mut Commands,
-	entity: Entity,
-	goal: Vec2
-) {
-	commands.entity(entity)
-		.entry::<MoveToPosition>()
-		.and_modify(move |mut move_to| move_to.0 = goal)
-		.or_insert(MoveToPosition(goal));
 }
 
 fn is_bounding(
@@ -360,6 +599,7 @@ fn handle_input(
 			.iter()
 			.filter_map(|(key, direction)| input.pressed(*key).then_some(*direction))
 			.sum::<Vec2>()
+			.clamp_length_max(0.5)
 		}
 		_ => {
 			Vec2::ZERO
@@ -390,15 +630,15 @@ fn handle_shoving(
 
 fn handle_bounds(
 	mut commands: Commands,
-	with_bounds: Query<(Entity, &Bounder, &Position, &mut BoundedEntities)>,
-	boundable: Query<(Entity, &Bounder, &Position)>,
+	with_bounds: Query<(Entity, &CircleBounds, &Position, &mut BoundedEntities)>,
+	boundable: Query<(Entity, &CircleBounds, &Position)>,
 ) {
-	for (own_entity, bounder, position, mut bounded_entities) in with_bounds {
-		for (target_entity, target_bounder, target_position) in boundable {
+	for (own_entity, bounds, position, mut bounded_entities) in with_bounds {
+		for (target_entity, target_bounds, target_position) in boundable {
 			if target_entity != own_entity {
 				let bounded = is_bounding(
-					(bounder.0, position.0),
-					(target_bounder.0, target_position.0),
+					(bounds.0, position.0),
+					(target_bounds.0, target_position.0),
 				);
 				
 				if bounded_entities.0.contains(&target_entity) { // if already contained
@@ -491,7 +731,7 @@ fn handle_move_to( // for npcs bawls
 	}
 }
 
-fn handle_directional_move(
+fn handle_velocity(
 	moveables: Query<(
 		&mut Velocity, &MoveDirection, &MoveSpeed
 	), Without<Impulse>> // directional move is not for entities impulsed
@@ -502,11 +742,20 @@ fn handle_directional_move(
 }
 
 fn handle_move(
+	mut commands: Commands,
 	moveables: Query<(
-		&mut Position, &Velocity
+		Entity, &mut Position, &Velocity
 	)>
 ) {
-	for (mut position, velocity) in moveables {
-		position.0 += velocity.0
+	for (entity, mut position, velocity) in moveables {
+		let old_position = position.0.clone();
+		let new_position = position.0 + velocity.0;
+		
+		position.0 = new_position;
+		commands.trigger(EntityMoved {
+			entity: entity,
+			new_pos: new_position,
+			old_pos: old_position,
+		});
 	}
 }

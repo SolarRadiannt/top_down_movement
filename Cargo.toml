@@ -10,7 +10,7 @@ bevy_pancam = "0.19.0"
 bevy_cursor = "0.7.1"
 
 [profile.dev.package."*"]
-opt-level = 3
+opt-level = 1
 
 [profile.release]
 lto = true

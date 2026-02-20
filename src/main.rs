@@ -495,12 +495,19 @@ fn qt_testing(
 	};
 }
 
+fn random_vector(x_range: RangeInclusive<f32>, y_range: RangeInclusive<f32>) -> Vec2 {
+	Vec2::new(
+		rand::thread_rng().gen_range(x_range),
+		rand::thread_rng().gen_range(y_range),
+	)
+}
+
 fn check_boundary_qt(
 	mut commands: Commands,
 	qt: Res<SolQT>,
 	mut ball_spawn: BallSpawnParams,
 ) {
-	let check_rect = Rect::from_center_size(Vec2::ZERO, Vec2::splat(1_000.0));
+	let check_rect = Rect::from_center_size(random_vector(SPAWN_RANGE, SPAWN_RANGE), Vec2::splat(500.0));
 	let found = qt.0.query_rect(check_rect);
 	commands.spawn(RectToDraw(get_rect_corners(check_rect), Color::srgb(0., 1.0, 0.)));
 	println!("found withind check: {}", found.len());
@@ -509,7 +516,7 @@ fn check_boundary_qt(
 		spawn_bawl(
 			Some(point),
 			Color::srgb(0.0, 1.0, 0.0),
-			Circle::new(10.0),
+			Circle::new(5.0),
 			|_| {},
 			&mut ball_spawn,
 			&mut commands

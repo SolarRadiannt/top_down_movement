@@ -29,7 +29,7 @@ const MAX_QUAD_DEPTH: i32 = 10;
 const PLAYER_SPEED: f32 = 5.0;
 const BALL_SPEED: f32 = 3.0;
 
-const BALL_SIZE: f32 = 9.0;
+const BALL_SIZE: f32 = 3.0;
 const BALL_SHAPE: Circle = Circle::new(BALL_SIZE);
 const IMPULSE_DECAY_RATE: f32 = 20.0;
 
@@ -44,10 +44,10 @@ const SPAWN_DURATION:f32 = 0.1;
 const SHOVE_POWER: f32 = 10.0;
 
 const WANDER_RANGE: RangeInclusive<f32> = -300.0..=300.0;
-const SPAWN_RANGE: RangeInclusive<f32> = -5_000.0..=5_000.0;
+const SPAWN_RANGE: RangeInclusive<f32> = -1_000.0..=1_000.0;
 
 use std::{ops::RangeInclusive, str::Lines, time::Duration};
-use bevy::{asset::uuid::timestamp::context, ecs::{entity, relationship::*, system::SystemParam}, input::{mouse::MouseButtonInput, *}, math::*, prelude::*, render::mesh::MeshRenderAssetPlugin, ui_render::shader_flags::CORNERS, window::PrimaryWindow};
+use bevy::{asset::uuid::timestamp::context, ecs::{entity, relationship::*, system::SystemParam}, input::{mouse::MouseButtonInput, *}, math::*, prelude::*, render::mesh::MeshRenderAssetPlugin, transform::commands, ui_render::shader_flags::CORNERS, window::PrimaryWindow};
 use bevy_pancam::*;
 use rand::prelude::*;
 use std::collections::HashMap;
@@ -121,6 +121,9 @@ struct Shover;
 #[derive(Component)]
 struct Counter;
 
+#[derive(Component)]
+struct RectToDraw([Vec2; 4], Color);
+
 // ---[ resources ]---
 
 #[derive(Resource)]
@@ -136,9 +139,8 @@ struct QuadTree {
 	points: Vec<Vec2>,
 	corners: [Vec2; 4],
 	
-	north_east: Option<Box<QuadTree>>, north_west: Option<Box<QuadTree>>,
-	south_east: Option<Box<QuadTree>>, south_west: Option<Box<QuadTree>>,
 	divided: bool,
+	children: Option<[Box<QuadTree>; 4]>,
 }
 impl QuadTree {
 	fn new(boundary: Rect, capacity: u32) -> Self {
@@ -147,17 +149,13 @@ impl QuadTree {
 			capacity: capacity,
 			points: Vec::default(),
 			corners: get_rect_corners(boundary),
-			
-			south_west: None,
-			south_east: None,
-			north_west: None,
-			north_east: None,
+			children: None,
 			divided: false,
 		}
 	}
 	
 	fn subdivide(&mut self) {
-		println!("qt subdivided");
+		// println!("qt subdivided");
 		self.divided = true;
 		let boundary = self.boundary;
 		let center = boundary.center();
@@ -169,53 +167,66 @@ impl QuadTree {
 		
 		
 		let ne = Rect::from_center_half_size(center + Vec2::new(x, y), root_size);
-		self.north_east = Some(Box::new(QuadTree::new(ne, capacity)));
-		
 		let nw = Rect::from_center_half_size(center - Vec2::new(x, -y), root_size);
-		self.north_west = Some(Box::new(QuadTree::new(nw, capacity)));
-		
 		let se = Rect::from_center_half_size(center + Vec2::new(x, -y), root_size);
-		self.south_east = Some(Box::new(QuadTree::new(se, capacity)));
-		
 		let sw = Rect::from_center_half_size(center - Vec2::new(x, y), root_size);
-		self.south_west = Some(Box::new(QuadTree::new(sw, capacity)));
+		self.children = Some([
+			Box::new(QuadTree::new(ne, self.capacity)),
+			Box::new(QuadTree::new(nw, self.capacity)),
+			Box::new(QuadTree::new(se, self.capacity)),
+			Box::new(QuadTree::new(sw, self.capacity)),
+		])
 	}
 	
 	fn insert(&mut self, point: Vec2) -> bool {
-		if !self.boundary.contains(point) { println!("point not within bounds"); return false; };
-		print!("{} point inserted, current len: {}, capacity: {}", point, self.points.len(), self.capacity);
+		if !self.boundary.contains(point) { return false; };
+		// print!("{} point inserted, current len: {}, capacity: {}", point, self.points.len(), self.capacity);
 		if self.points.len() < self.capacity as usize {
 			self.points.push(point);
 			true
 		} else {
 			if !self.divided { self.subdivide() };
-			
-			let children = [
-				self.north_east.as_mut(), self.north_west.as_mut(),
-				self.south_east.as_mut(), self.south_west.as_mut(),
-			];
-			for child_opt in children {
-				if let Some(child) = child_opt {
+			if let Some(children) = &mut self.children {
+				for mut child in children {
 					if child.insert(point) {
 						return true;
 					}
-				}
+				};
 			};
 			false
 		}
 	}
 	
+	fn query_rect(&self, rect: Rect) -> Vec<Vec2> { // range/box
+		let mut found = Vec::new();
+		
+		if self.boundary.intersect(rect).is_empty() {
+			// println!("is not overlapping bounds");
+			found
+		} else {
+			// println!("is overlapping, filling the found");
+			for point in self.points.iter() {
+				if rect.contains(*point) {
+					found.push(*point);
+				}
+			}
+			if self.divided {
+				// println!("is divided, checking children...");
+				if let Some(children) = &self.children {
+					for child in children {
+						found.extend(child.query_rect(rect));
+					}
+				}
+			}
+			found
+		}
+	}
+	
 	fn draw(&self, gizmos: &mut Gizmos) {
 		draw_rect(gizmos, self.corners, Color::WHITE);
-		if self.divided {
-			let children = [
-				&self.north_east, &self.north_west,
-				&self.south_east, &self.south_west,
-			];
-			for child_opt in children {
-				if let Some(child) = child_opt {
-					child.draw(gizmos);
-				}
+		if self.divided && let Some(children) = &self.children {
+			for child in children {
+				child.draw(gizmos);
 			};
 		}
 	}
@@ -227,8 +238,7 @@ struct SolQT(QuadTree);
 // ---[ system params ]---
 
 #[derive(SystemParam)]
-struct BallSpawnParams<'w, 's> {
-	commands: Commands<'w, 's>,
+struct BallSpawnParams<'w> {
 	meshes: ResMut<'w, Assets<Mesh>>,
 	materials: ResMut<'w, Assets<ColorMaterial>>,
 }
@@ -277,12 +287,12 @@ fn spawn_bawl<F>(
 	color: Color,
 	shape: Circle,
 	adjust_fc: F,
-	mut ball_spawn: BallSpawnParams,
+	ball_spawn: &mut BallSpawnParams,
+	commands: &mut Commands,
 ) -> Entity
 	where F: FnOnce(&mut EntityCommands)
 {
 	// println!("Spawning bawls...");
-	let mut commands = ball_spawn.commands;
 	let mesh = ball_spawn.meshes.add(shape);
 	let material = ball_spawn.materials.add(color);
 	
@@ -302,7 +312,8 @@ fn spawn_bawl<F>(
 }
 
 fn spawn_player(
-	ball_spawn: BallSpawnParams
+	mut ball_spawn: BallSpawnParams,
+	mut commands: Commands,
 ) {
 	spawn_bawl(
 		None,
@@ -313,13 +324,15 @@ fn spawn_player(
 				.entry::<MoveSpeed>()
 				.and_modify(|mut speed| speed.0 = PLAYER_SPEED);
 		},
-		ball_spawn,
+		&mut ball_spawn,
+		&mut commands,
 	);
 }
 
 fn spawn_shove_bawl(
 	position: Vec2,
-	ball_spawn: BallSpawnParams,
+	ball_spawn: &mut BallSpawnParams,
+	commands: &mut Commands,
 ) {
 	spawn_bawl(
 		Some(position),
@@ -327,12 +340,14 @@ fn spawn_shove_bawl(
 		BALL_SHAPE,
 		|cmds| { cmds.insert(Shover); },
 		ball_spawn,
+		commands,
 	);
 }
 
 fn spawn_regular_bawl(
 	position: Vec2,
-	ball_spawn: BallSpawnParams,
+	ball_spawn: &mut BallSpawnParams,
+	commands: &mut Commands,
 ) {
 	spawn_bawl(
 		Some(position),
@@ -340,6 +355,7 @@ fn spawn_regular_bawl(
 		BALL_SHAPE,
 		|_| { },
 		ball_spawn,
+		commands,
 	);
 }
 
@@ -426,17 +442,18 @@ fn main() {
 	));
 	
 	app.add_systems(Startup, (
+		//draw_world_boundary
 		spawn_camera,
 		// spawn_player,
 		spawn_counter,
+		qt_testing,
+		check_boundary_qt.after(qt_testing)
 	));
 	
 	app.add_systems(FixedUpdate, (
-		spawn_bawls_on_click,
-		
 		draw_qt,
-		// draw_world_boundary,
 		update_ui_count,
+		handle_drawing_for_rects,
 		
 		// handle_npc_spawn,
 		// handle_npc_wander,
@@ -458,39 +475,47 @@ fn main() {
 	app.add_observer(insert_new_point_to_qt);
 	
 	app.run();
+	
+	
 }
 // ^^^ ==> [ MAIN ] <== ^^^
 
 // ---[ systems ]---
-
-fn spawn_bawls_on_click(
+const AMOUNT: u32 = 500;
+fn qt_testing(
 	mut ball_spawn: BallSpawnParams,
-	mouse_input: Res<ButtonInput<MouseButton>>,
-	cursor: Res<CursorLocation>,
-	camera_query: Query<(&Camera, &GlobalTransform)>,
+	mut commands: Commands,
+	qt: Res<SolQT>
 ) {
-	if !mouse_input.pressed(MouseButton::Left) { return; }
-	
-	let Some(cursor_pos) = cursor.position() else { return };
-	
-	// Get the camera (often the first one, but better to use a marker)
-	let (camera, camera_transform) = match camera_query.single() {
-		Ok(camera) => camera,
-		Err(e) => {
-			error!("Camera query failed: {:?}", e);
-			return;
-		}
+	for i in 0..AMOUNT {
+		let position = Vec2::new(
+			rand::thread_rng().gen_range(SPAWN_RANGE),
+			rand::thread_rng().gen_range(SPAWN_RANGE));
+		spawn_regular_bawl(position, &mut ball_spawn, &mut commands);
 	};
-	
-	// Use Result handling (if let Ok) instead of Option
-	if let Ok(world_pos) = camera.viewport_to_world_2d(camera_transform, cursor_pos) {
-		spawn_regular_bawl(world_pos, ball_spawn);
-	} else {
-		// Optionally log the conversion error
-		warn!("Failed to convert cursor position to world coordinates");
-	}
 }
 
+fn check_boundary_qt(
+	mut commands: Commands,
+	qt: Res<SolQT>,
+	mut ball_spawn: BallSpawnParams,
+) {
+	let check_rect = Rect::from_center_size(Vec2::ZERO, Vec2::splat(1_000.0));
+	let found = qt.0.query_rect(check_rect);
+	commands.spawn(RectToDraw(get_rect_corners(check_rect), Color::srgb(0., 1.0, 0.)));
+	println!("found withind check: {}", found.len());
+	
+	for point in found {
+		spawn_bawl(
+			Some(point),
+			Color::srgb(0.0, 1.0, 0.0),
+			Circle::new(10.0),
+			|_| {},
+			&mut ball_spawn,
+			&mut commands
+		);
+	}
+}
 
 fn draw_qt(
 	mut gizmos: Gizmos,
@@ -500,9 +525,18 @@ fn draw_qt(
 }
 
 fn draw_world_boundary(
-	mut gizmos: Gizmos
+	mut commands: Commands
 ) {
-	draw_rect(&mut gizmos, WORLD_CORNERS, BOUNDARY_COLOR);
+	commands.spawn(RectToDraw(WORLD_CORNERS, BOUNDARY_COLOR));
+}
+
+fn handle_drawing_for_rects(
+	mut gizmos: Gizmos,
+	rects: Query<&RectToDraw>,
+) {
+	for to_draw in rects {
+		draw_rect(&mut gizmos, to_draw.0, to_draw.1);
+	}
 }
 
 fn handle_world_boundary(
@@ -556,7 +590,8 @@ fn count_bawl_removed(
 fn handle_npc_spawn(
 	time: Res<Time<Fixed>>,
 	mut spawn_timer: ResMut<SpawnTimer>,
-	ball_spawn: BallSpawnParams,
+	mut ball_spawn: BallSpawnParams,
+	mut commands: Commands,
 ) {
 	spawn_timer.0.tick(time.delta());
 	if spawn_timer.0.just_finished() {
@@ -565,9 +600,9 @@ fn handle_npc_spawn(
 			rand::thread_rng().gen_range(SPAWN_RANGE));
 		let random = rand::thread_rng().gen_range(1..=2);
 		if random == 1 {
-			spawn_regular_bawl(position, ball_spawn);
+			spawn_regular_bawl(position, &mut ball_spawn, &mut commands);
 		} else {
-			spawn_shove_bawl(position, ball_spawn)
+			spawn_shove_bawl(position, &mut ball_spawn, &mut commands)
 		}
 		
 	}

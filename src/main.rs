@@ -3,6 +3,9 @@
 #![allow(unused_imports)]
 #![allow(unused_mut)]
 
+const WORLD_SIZE: Vec2 = Vec2::splat(10_000.0);
+const WORLD_CENTER: Vec2 = Vec2::ZERO;
+
 const BALL_SPEED: f32 = 3.0;
 const BALL_SIZE: f32 = 9.0;
 const BALL_SHAPE: Circle = Circle::new(BALL_SIZE);
@@ -256,9 +259,9 @@ fn main() {
 		PanCamPlugin,
 		
 		// QuadTreePlugin::<(
-		// 	(CollisionCircle, GlobalTransform),
-		// 	(CollisionRect, (GlobalTransform, Sprite)),
-		// ), 40, 8, 100, 100, 0, 0, 20, 114514>::default()
+		// 	(CollisionCircle, GlobalTransform), (CollisionRect, (GlobalTransform, Sprite)),
+		// ),
+		// 40, 8, WORLD_SIZE.x, WORLD_SIZE.y, WORLD_CENTER.x, WORLD_CENTER.y, 20, 114514>::default()
 	));
 	
 	app.add_systems(Startup, (

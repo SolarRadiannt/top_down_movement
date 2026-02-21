@@ -40,7 +40,7 @@ const PLAYER_COLOR: Color = Color::srgb(0.0, 0.5, 1.0);
 const MOVE_TO_REACHED_DIST: f32 = 3.5;
 
 const WANDER_DURATION: f32 = 1.5;
-const SPAWN_DURATION:f32 = 0.1;
+const SPAWN_DURATION:f32 = 0.01;
 const SHOVE_POWER: f32 = 10.0;
 
 const WANDER_RANGE: RangeInclusive<f32> = -300.0..=300.0;
@@ -94,6 +94,9 @@ struct MoveState(MovementState);
 struct WanderTimer(Timer);
 
 #[derive(Component)]
+struct Boundary(Rect);
+
+#[derive(Component)]
 #[require(
 	Position,
 	Velocity = Velocity(Vec2::ZERO),
@@ -129,10 +132,11 @@ fn rect_intersect_circle(rect: Rect, circle: BoundingCircle) {
 	
 }
 
+const QT_MAX_GEN: u32 = 5;
 struct QuadTree {
 	boundary: Rect,
 	capacity: u32,
-	points: Vec<(Vec2, Entity)>,
+	points: Vec<(Rect, Entity)>,
 	corners: [Vec2; 4],
 	
 	divided: bool,
@@ -156,6 +160,8 @@ impl QuadTree {
 	fn subdivide(&mut self) {
 		// println!("qt subdivided");
 		self.divided = true;
+		if let Some(c) = &self.children { return };
+		
 		let boundary = self.boundary;
 		let center = boundary.center();
 		let root_size = boundary.half_size() / 2.0;
@@ -169,12 +175,22 @@ impl QuadTree {
 		let se = Rect::from_center_half_size(center + Vec2::new(x, -y), root_size);
 		let sw = Rect::from_center_half_size(center - Vec2::new(x, y), root_size);
 		
-		self.children = Some([
+		let mut qt_childs = [
 			Box::new(QuadTree::new(ne, self.capacity, Some(self.generation))),
 			Box::new(QuadTree::new(nw, self.capacity, Some(self.generation))),
 			Box::new(QuadTree::new(se, self.capacity, Some(self.generation))),
 			Box::new(QuadTree::new(sw, self.capacity, Some(self.generation))),
-		])
+		];
+		
+		for point in self.points.drain(..) {
+			for child in &mut qt_childs {
+				if child.insert(point) {
+					break;
+				}
+			}
+		}
+		
+		self.children = Some(qt_childs);
 	}
 	
 	fn remove(&mut self, entity: Entity) -> bool {
@@ -187,8 +203,6 @@ impl QuadTree {
 				true // Keep this element
 			}
 		});
-		
-		
 		
 		if removed {
 			if self.is_subtree_empty() {
@@ -218,30 +232,30 @@ impl QuadTree {
 	}
 	
 	fn is_subtree_empty(&self) -> bool {
-		if !self.points.is_empty() {
-			return false;
-		}
-		if let Some(children) = &self.children {
-			for child in children {
-				if !child.is_subtree_empty() {
-					return false;
-				}
-			}
-		};
-		true
+		// if !self.points.is_empty() {
+		// 	return false;
+		// }
+		// if let Some(children) = &self.children {
+		// 	for child in children {
+		// 		if !child.is_subtree_empty() {
+		// 			return false;
+		// 		}
+		// 	}
+		// };
+		// true
+		false
 	}
 	
 	fn un_subdivide(&mut self) {
-		if let Some(children) = &mut self.children {
+		if self.divided {
 			self.divided = false;
-			self.children = None;
 		}
 	}
 	
-	fn insert(&mut self, point: (Vec2, Entity)) -> bool {
-		if !self.boundary.contains(point.0) { return false };
-		// print!("{} point inserted, current len: {}, capacity: {}", point, self.points.len(), self.capacity);
-		if self.points.len() < self.capacity as usize {
+	fn insert(&mut self, point: (Rect, Entity)) -> bool {
+		if self.boundary.intersect(point.0).is_empty() { return false };
+		// print!("{} point inserted, current len: {}, capacity: {} ", point, self.points.len(), self.capacity);
+		if self.generation >= QT_MAX_GEN || self.points.len() < self.capacity as usize {
 			self.points.push(point);
 			true
 		} else {
@@ -249,24 +263,25 @@ impl QuadTree {
 			if let Some(children) = &mut self.children {
 				for mut child in children {
 					if child.insert(point) {
-						return true;
+						return true
 					}
 				};
 			};
+			
 			false
 		}
 	}
 	
-	fn query_rect(&self, rect: Rect) -> Vec<&(Vec2, Entity)> { // range/box
+	fn query_rect(&self, rect: Rect) -> Vec<&(Rect, Entity)> { // range/box
 		let mut found = Vec::new();
 		
 		if self.boundary.intersect(rect).is_empty() {
 			// println!("is not overlapping bounds");
 			found
 		} else {
-			// println!("is overlapping, filling the found");
+			// println!("is overlapping, filling the found vec");
 			for point in self.points.iter() {
-				if rect.contains(point.0) {
+				if !rect.intersect(point.0).is_empty() {
 					found.push(point);
 				}
 			}
@@ -275,29 +290,6 @@ impl QuadTree {
 				if let Some(children) = &self.children {
 					for child in children {
 						found.extend(child.query_rect(rect));
-					}
-				}
-			}
-			found
-		}
-	}
-	
-	fn query_circle(&self, circle: BoundingCircle) -> Vec<&(Vec2, Entity)>{
-		let mut found = Vec::new();
-		
-		if self.boundary.contains(circle.center) {
-			found
-		} else {
-			for point in self.points.iter() {
-				if circle.contains(&BoundingCircle::new(point.0, 0.1)) {
-					found.push(point);
-				}
-			}
-			if self.divided {
-				// println!("is divided, checking children...");
-				if let Some(children) = &self.children {
-					for child in children {
-						found.extend(child.query_circle(circle));
 					}
 				}
 			}
@@ -378,12 +370,14 @@ fn spawn_bawl<F>(
 	// println!("Spawning bawls...");
 	let mesh = ball_spawn.meshes.add(shape);
 	let material = ball_spawn.materials.add(color);
+	let origin = position.unwrap_or(Vec2::ZERO);
 	
 	let mut entity_cmds = commands.spawn((
 		Ball(shape),
 		Mesh2d(mesh),
 		MeshMaterial2d(material),
-		Position(position.unwrap_or(Vec2::ZERO)),
+		Position(origin),
+		Boundary(Rect::from_center_size(origin, Vec2::splat(shape.radius)))
 	));
 	let entity_id = entity_cmds.id();
 	adjust_fc(&mut entity_cmds);
@@ -543,19 +537,19 @@ fn main() {
 		handle_position_projection,
 		handle_input,
 		handle_move_to,
-		handle_shoving,
+		// handle_shoving,
 		handle_impulse,
 		handle_velocity,
 		handle_move,
 	).chain());
 	app.insert_resource(SpawnTimer(Timer::from_seconds(SPAWN_DURATION, TimerMode::Repeating)));
 	app.insert_resource(BawlCount(0));
-	app.insert_resource(SolQT(QuadTree::new(WORLD_BOUNDARY, 5, None)));
+	app.insert_resource(SolQT(QuadTree::new(WORLD_BOUNDARY, 40, None)));
 	app.add_observer(count_bawl_spawned);
 	app.add_observer(count_bawl_removed);
 	app.add_observer(handle_world_boundary);
 	app.add_observer(insert_new_point_to_qt);
-	app.add_observer(update_qt);
+	app.add_observer(update_boundary);
 	app.run();
 	
 	
@@ -655,28 +649,42 @@ fn count_bawl_spawned(
 fn insert_new_point_to_qt(
 	event: On<BawlSpawnEvent>,
 	mut commands: Commands,
-	positions: Query<&Position>,
+	positions: Query<(&Boundary, &Ball)>,
 	mut qt: ResMut<SolQT>,
 ) {
 	let e = event.0;
-	if let Ok(point) = positions.get(e) {
-		qt.0.insert((point.0, e));
+	if let Ok((boundary, ball)) = positions.get(e) {
+		qt.0.insert((boundary.0, e));
 	}
 }
 
-fn update_qt(
-	event: On<EntityMoved>,
-	mut qt: ResMut<SolQT>,
-) {
-	qt.0.remove(event.entity);
-	qt.0.insert((event.new_pos, event.entity));
-}
+// fn update_qt(
+// 	event: On<EntityMoved>,
+// 	mut qt: ResMut<SolQT>,
+// ) {
+// 	qt.0.remove(event.entity);
+// 	qt.0.insert((event.new_pos, event.entity));
+// }
 
 fn count_bawl_removed(
 	event: On<BawlRemovedEvent>,
 	mut b_count: ResMut<BawlCount>,
 ) {
 	b_count.0 -= 1;
+}
+
+fn update_boundary(
+	event: On<EntityMoved>,
+	mut to_update: Query<&mut Boundary>,
+	mut qt: ResMut<SolQT>
+) {
+	if let Ok(mut boundary) = to_update.get_mut(event.entity) {
+		boundary.0.min = event.new_pos;
+		boundary.0.max = event.new_pos + boundary.0.size();
+		
+		qt.0.remove(event.entity);
+		qt.0.insert((boundary.0, event.entity));
+	}
 }
 
 fn handle_npc_spawn(
@@ -697,17 +705,6 @@ fn handle_npc_spawn(
 			spawn_shove_bawl(position, &mut ball_spawn, &mut commands)
 		}
 	}
-}
-
-fn is_bounding(
-	origin: (Circle, Vec2),
-	target: (Circle, Vec2)
-) -> bool {
-	let (circle_a, pos_a) = origin;
-	let (circle_b, pos_b) = target;
-	
-	let distance = pos_a.distance(pos_b);
-	distance < circle_a.radius + circle_b.radius
 }
 
 fn handle_input(

@@ -26,10 +26,10 @@ const WORLD_CORNERS: [Vec2; 4] = get_rect_corners(WORLD_BOUNDARY);
 const BOUNDARY_COLOR: Color = Color::srgb(1.0, 0.0, 0.0);
 const MAX_QUAD_DEPTH: i32 = 10;
 
-const PLAYER_SPEED: f32 = 5.0;
+const PLAYER_SPEED: f32 = 3.5;
 const BALL_SPEED: f32 = 3.0;
 
-const BALL_SIZE: f32 = 3.0;
+const BALL_SIZE: f32 = 5.0;
 const BALL_SHAPE: Circle = Circle::new(BALL_SIZE);
 const IMPULSE_DECAY_RATE: f32 = 20.0;
 
@@ -46,8 +46,8 @@ const SHOVE_POWER: f32 = 10.0;
 const WANDER_RANGE: RangeInclusive<f32> = -300.0..=300.0;
 const SPAWN_RANGE: RangeInclusive<f32> = -1_000.0..=1_000.0;
 
-use std::{ops::RangeInclusive, str::Lines, time::Duration};
-use bevy::{asset::uuid::timestamp::context, ecs::{entity, relationship::*, system::SystemParam}, input::{mouse::MouseButtonInput, *}, math::*, prelude::*, render::mesh::MeshRenderAssetPlugin, transform::commands, ui_render::shader_flags::CORNERS, window::PrimaryWindow};
+use std::{any::Any, ops::RangeInclusive, str::Lines, time::Duration};
+use bevy::{asset::uuid::timestamp::context, audio::Volume, ecs::{entity, relationship::*, system::SystemParam}, input::{mouse::MouseButtonInput, *}, math::{bounding::{BoundingCircle, BoundingVolume, IntersectsVolume}, *}, prelude::*, render::mesh::MeshRenderAssetPlugin, sprite_render::Material2d, transform::commands, ui_render::shader_flags::CORNERS, window::PrimaryWindow};
 use bevy_pancam::*;
 use rand::prelude::*;
 use std::collections::HashMap;
@@ -94,12 +94,6 @@ struct MoveState(MovementState);
 struct WanderTimer(Timer);
 
 #[derive(Component)]
-struct CircleBounds(Circle);
-
-#[derive(Component)]
-struct BoundedEntities(Vec<Entity>);
-
-#[derive(Component)]
 #[require(
 	Position,
 	Velocity = Velocity(Vec2::ZERO),
@@ -107,10 +101,8 @@ struct BoundedEntities(Vec<Entity>);
 	MoveSpeed = MoveSpeed(BALL_SPEED),
 	MoveState = MoveState(MovementState::Normal),
 	WanderTimer = WanderTimer(Timer::from_seconds(WANDER_DURATION, TimerMode::Repeating)),
-	CircleBounds = CircleBounds(BALL_SHAPE),
-	BoundedEntities = BoundedEntities(Vec::default()),
 )]
-struct Ball;
+struct Ball(Circle);
 
 #[derive(Component)]
 struct Player;
@@ -133,17 +125,23 @@ struct SpawnTimer(Timer);
 struct BawlCount(u32);
 
 
+fn rect_intersect_circle(rect: Rect, circle: BoundingCircle) {
+	
+}
+
 struct QuadTree {
 	boundary: Rect,
 	capacity: u32,
-	points: Vec<Vec2>,
+	points: Vec<(Vec2, Entity)>,
 	corners: [Vec2; 4],
 	
 	divided: bool,
 	children: Option<[Box<QuadTree>; 4]>,
+	generation: u32,
 }
 impl QuadTree {
-	fn new(boundary: Rect, capacity: u32) -> Self {
+	fn new(boundary: Rect, capacity: u32, generation: Option<u32>) -> Self {
+		let next_gen = generation.unwrap_or(0) + 1;
 		Self {
 			boundary: boundary,
 			capacity: capacity,
@@ -151,6 +149,7 @@ impl QuadTree {
 			corners: get_rect_corners(boundary),
 			children: None,
 			divided: false,
+			generation: next_gen,
 		}
 	}
 	
@@ -165,21 +164,82 @@ impl QuadTree {
 		let x = root_size.x;
 		let y = root_size.y;
 		
-		
 		let ne = Rect::from_center_half_size(center + Vec2::new(x, y), root_size);
 		let nw = Rect::from_center_half_size(center - Vec2::new(x, -y), root_size);
 		let se = Rect::from_center_half_size(center + Vec2::new(x, -y), root_size);
 		let sw = Rect::from_center_half_size(center - Vec2::new(x, y), root_size);
+		
 		self.children = Some([
-			Box::new(QuadTree::new(ne, self.capacity)),
-			Box::new(QuadTree::new(nw, self.capacity)),
-			Box::new(QuadTree::new(se, self.capacity)),
-			Box::new(QuadTree::new(sw, self.capacity)),
+			Box::new(QuadTree::new(ne, self.capacity, Some(self.generation))),
+			Box::new(QuadTree::new(nw, self.capacity, Some(self.generation))),
+			Box::new(QuadTree::new(se, self.capacity, Some(self.generation))),
+			Box::new(QuadTree::new(sw, self.capacity, Some(self.generation))),
 		])
 	}
 	
-	fn insert(&mut self, point: Vec2) -> bool {
-		if !self.boundary.contains(point) { return false; };
+	fn remove(&mut self, entity: Entity) -> bool {
+		let mut removed = false;
+		self.points.retain(|point| {
+			if point.1 == entity {
+				removed = true;
+				false // Remove this element
+			} else {
+				true // Keep this element
+			}
+		});
+		
+		
+		
+		if removed {
+			if self.is_subtree_empty() {
+				self.un_subdivide();
+			}
+			true
+		} else {
+			let Some(children) = &mut self.children else { return false };
+			
+			if self.divided {
+				for mut child in children {
+					if child.remove(entity) {
+						if self.is_subtree_empty() {
+							self.un_subdivide();
+						}
+						return true
+					};
+				};
+			}
+			
+			if self.is_subtree_empty() {
+				self.un_subdivide();
+			}
+			
+			false
+		}
+	}
+	
+	fn is_subtree_empty(&self) -> bool {
+		if !self.points.is_empty() {
+			return false;
+		}
+		if let Some(children) = &self.children {
+			for child in children {
+				if !child.is_subtree_empty() {
+					return false;
+				}
+			}
+		};
+		true
+	}
+	
+	fn un_subdivide(&mut self) {
+		if let Some(children) = &mut self.children {
+			self.divided = false;
+			self.children = None;
+		}
+	}
+	
+	fn insert(&mut self, point: (Vec2, Entity)) -> bool {
+		if !self.boundary.contains(point.0) { return false };
 		// print!("{} point inserted, current len: {}, capacity: {}", point, self.points.len(), self.capacity);
 		if self.points.len() < self.capacity as usize {
 			self.points.push(point);
@@ -197,7 +257,7 @@ impl QuadTree {
 		}
 	}
 	
-	fn query_rect(&self, rect: Rect) -> Vec<Vec2> { // range/box
+	fn query_rect(&self, rect: Rect) -> Vec<&(Vec2, Entity)> { // range/box
 		let mut found = Vec::new();
 		
 		if self.boundary.intersect(rect).is_empty() {
@@ -206,8 +266,8 @@ impl QuadTree {
 		} else {
 			// println!("is overlapping, filling the found");
 			for point in self.points.iter() {
-				if rect.contains(*point) {
-					found.push(*point);
+				if rect.contains(point.0) {
+					found.push(point);
 				}
 			}
 			if self.divided {
@@ -215,6 +275,29 @@ impl QuadTree {
 				if let Some(children) = &self.children {
 					for child in children {
 						found.extend(child.query_rect(rect));
+					}
+				}
+			}
+			found
+		}
+	}
+	
+	fn query_circle(&self, circle: BoundingCircle) -> Vec<&(Vec2, Entity)>{
+		let mut found = Vec::new();
+		
+		if self.boundary.contains(circle.center) {
+			found
+		} else {
+			for point in self.points.iter() {
+				if circle.contains(&BoundingCircle::new(point.0, 0.1)) {
+					found.push(point);
+				}
+			}
+			if self.divided {
+				// println!("is divided, checking children...");
+				if let Some(children) = &self.children {
+					for child in children {
+						found.extend(child.query_circle(circle));
 					}
 				}
 			}
@@ -297,7 +380,7 @@ fn spawn_bawl<F>(
 	let material = ball_spawn.materials.add(color);
 	
 	let mut entity_cmds = commands.spawn((
-		Ball,
+		Ball(shape),
 		Mesh2d(mesh),
 		MeshMaterial2d(material),
 		Position(position.unwrap_or(Vec2::ZERO)),
@@ -444,10 +527,10 @@ fn main() {
 	app.add_systems(Startup, (
 		//draw_world_boundary
 		spawn_camera,
-		// spawn_player,
+		spawn_player,
 		spawn_counter,
-		qt_testing,
-		check_boundary_qt.after(qt_testing)
+		// qt_testing,
+		// check_boundary_qt.after(qt_testing)
 	));
 	
 	app.add_systems(FixedUpdate, (
@@ -455,25 +538,24 @@ fn main() {
 		update_ui_count,
 		handle_drawing_for_rects,
 		
-		// handle_npc_spawn,
-		// handle_npc_wander,
+		handle_npc_spawn,
+		handle_npc_wander,
 		handle_position_projection,
-		// handle_input,
-		// handle_bounds,
-		// handle_move_to,
-		// handle_shoving,
-		// handle_impulse,
-		// handle_velocity,
-		// handle_move,
+		handle_input,
+		handle_move_to,
+		handle_shoving,
+		handle_impulse,
+		handle_velocity,
+		handle_move,
 	).chain());
 	app.insert_resource(SpawnTimer(Timer::from_seconds(SPAWN_DURATION, TimerMode::Repeating)));
 	app.insert_resource(BawlCount(0));
-	app.insert_resource(SolQT(QuadTree::new(WORLD_BOUNDARY, 5)));
+	app.insert_resource(SolQT(QuadTree::new(WORLD_BOUNDARY, 5, None)));
 	app.add_observer(count_bawl_spawned);
 	app.add_observer(count_bawl_removed);
 	app.add_observer(handle_world_boundary);
 	app.add_observer(insert_new_point_to_qt);
-	
+	app.add_observer(update_qt);
 	app.run();
 	
 	
@@ -501,26 +583,20 @@ fn random_vector(x_range: RangeInclusive<f32>, y_range: RangeInclusive<f32>) -> 
 		rand::thread_rng().gen_range(y_range),
 	)
 }
-
+#[derive(Component)]
+struct InBounds;
 fn check_boundary_qt(
 	mut commands: Commands,
 	qt: Res<SolQT>,
 	mut ball_spawn: BallSpawnParams,
 ) {
-	let check_rect = Rect::from_center_size(random_vector(SPAWN_RANGE, SPAWN_RANGE), Vec2::splat(500.0));
+	let check_rect = Rect::from_center_size(random_vector(-2_00.0..=2_00.0, -2_00.0..=2_00.0), Vec2::splat(500.0));
 	let found = qt.0.query_rect(check_rect);
 	commands.spawn(RectToDraw(get_rect_corners(check_rect), Color::srgb(0., 1.0, 0.)));
 	println!("found withind check: {}", found.len());
 	
 	for point in found {
-		spawn_bawl(
-			Some(point),
-			Color::srgb(0.0, 1.0, 0.0),
-			Circle::new(5.0),
-			|_| {},
-			&mut ball_spawn,
-			&mut commands
-		);
+		commands.entity(point.1).insert(InBounds);
 	}
 }
 
@@ -582,9 +658,18 @@ fn insert_new_point_to_qt(
 	positions: Query<&Position>,
 	mut qt: ResMut<SolQT>,
 ) {
-	if let Ok(point) = positions.get(event.0) {
-		qt.0.insert(point.0);
+	let e = event.0;
+	if let Ok(point) = positions.get(e) {
+		qt.0.insert((point.0, e));
 	}
+}
+
+fn update_qt(
+	event: On<EntityMoved>,
+	mut qt: ResMut<SolQT>,
+) {
+	qt.0.remove(event.entity);
+	qt.0.insert((event.new_pos, event.entity));
 }
 
 fn count_bawl_removed(
@@ -611,7 +696,6 @@ fn handle_npc_spawn(
 		} else {
 			spawn_shove_bawl(position, &mut ball_spawn, &mut commands)
 		}
-		
 	}
 }
 
@@ -621,6 +705,7 @@ fn is_bounding(
 ) -> bool {
 	let (circle_a, pos_a) = origin;
 	let (circle_b, pos_b) = target;
+	
 	let distance = pos_a.distance(pos_b);
 	distance < circle_a.radius + circle_b.radius
 }
@@ -653,11 +738,16 @@ fn handle_input(
 
 fn handle_shoving(
 	mut commands: Commands,
-	shovers: Query<(&BoundedEntities, &Position), With<Shover>>,
+	shovers: Query<(Entity, &Position, &Ball), With<Shover>>,
 	targets: Query<&Position, With<Velocity>>,
+	qt: Res<SolQT>,
 ) {
-	for (bounded_entities, origin) in shovers {
-		for target_entity in bounded_entities.0.iter() {
+	for (entity, origin, ball) in shovers {
+		let bounded_entities = qt.0.query_rect(Rect::from_center_size(origin.0, Vec2::splat(ball.0.radius)));
+		for points in bounded_entities.iter() {
+			let target_entity = points.1;
+			if target_entity == entity { continue };
+			
 			if let Ok(targ_pos) = targets.get(target_entity) {
 				
 				let resultant = origin.0 - targ_pos.0;
@@ -665,33 +755,6 @@ fn handle_shoving(
 				
 				let force = dir * SHOVE_POWER;
 				impulse(commands.entity(target_entity), -force);
-			}
-		}
-	}
-}
-
-fn handle_bounds(
-	mut commands: Commands,
-	with_bounds: Query<(Entity, &CircleBounds, &Position, &mut BoundedEntities)>,
-	boundable: Query<(Entity, &CircleBounds, &Position)>,
-) {
-	for (own_entity, bounds, position, mut bounded_entities) in with_bounds {
-		for (target_entity, target_bounds, target_position) in boundable {
-			if target_entity != own_entity {
-				let bounded = is_bounding(
-					(bounds.0, position.0),
-					(target_bounds.0, target_position.0),
-				);
-				
-				if bounded_entities.0.contains(&target_entity) { // if already contained
-					if !bounded {
-						bounded_entities.0.retain(|&ent| ent != target_entity); 
-					}
-				} else {
-					if bounded {
-						bounded_entities.0.push(target_entity);
-					}
-				}
 			}
 		}
 	}

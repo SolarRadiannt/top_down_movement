@@ -3,26 +3,37 @@
 #![allow(unused_imports)]
 #![allow(unused_mut)]
 
-const BALL_SPEED: f32 = 2.0;
-const BALL_SIZE: f32 = 6.0;
-const BALL_SHAPE: Circle = Circle::new(BALL_SIZE);
-const REGULAR_COLOR: Color = Color::srgb(1.0, 0.0, 0.0);
-const IMPULSE_DECAY_RATE: f32 = 50.0;
+const WORLD_SIZE: Vec2 = Vec2::splat(10_000.0);
+const WORLD_CENTER: Vec2 = Vec2::ZERO;
 
+const BALL_SPEED: f32 = 3.0;
+const BALL_SIZE: f32 = 9.0;
+const BALL_SHAPE: Circle = Circle::new(BALL_SIZE);
+const IMPULSE_DECAY_RATE: f32 = 20.0;
+
+const REGULAR_COLOR: Color = Color::srgb(1.0, 0.0, 0.0);
+const SHOVER_COLOR: Color = Color::srgb(0.8, 0.0, 0.9);
 const PLAYER_COLOR: Color = Color::srgb(0.0, 0.5, 1.0);
 
-const MOVE_TO_REACHED_DIST: f32 = 5.0;
+const MOVE_TO_REACHED_DIST: f32 = 3.5;
 
 const WANDER_DURATION: f32 = 1.5;
-const SPAWN_DURATION:f32 = 0.1;
+const SPAWN_DURATION:f32 = 0.5;
+const SHOVE_POWER: f32 = 10.0;
 
 const WANDER_RANGE: RangeInclusive<f32> = -200.0..=200.0;
-const SPAWN_RANGE: RangeInclusive<f32> = -500.0..=500.0;
+const SPAWN_RANGE: RangeInclusive<f32> = -300.0..=300.0;
 
 use std::{ops::RangeInclusive, time::Duration};
 use bevy::{ecs::{entity, relationship::*, system::SystemParam}, input::*, math::*, prelude::*, render::mesh::MeshRenderAssetPlugin};
 use bevy_pancam::*;
 use rand::prelude::*;
+use std::collections::HashMap;
+use bevy_quadtree::{
+	QuadTreePlugin,
+	CollisionCircle,
+	CollisionRect,
+};
 
 #[derive(PartialEq)]
 enum MovementState {
@@ -56,18 +67,29 @@ struct MoveState(MovementState);
 struct WanderTimer(Timer);
 
 #[derive(Component)]
+struct Bounder(Circle);
+
+#[derive(Component)]//		bawl, direction fron center
+struct BoundedEntities(Vec<Entity>);
+
+#[derive(Component)]
 #[require(
 	Position,
 	Velocity = Velocity(Vec2::ZERO),
 	MoveDirection = MoveDirection(Vec2::ZERO),
 	MoveSpeed = MoveSpeed(BALL_SPEED),
 	MoveState = MoveState(MovementState::Normal),
-	WanderTimer = WanderTimer(Timer::from_seconds(WANDER_DURATION, TimerMode::Repeating))
+	WanderTimer = WanderTimer(Timer::from_seconds(WANDER_DURATION, TimerMode::Repeating)),
+	Bounder = Bounder(BALL_SHAPE),
+	BoundedEntities = BoundedEntities(Vec::default()),
 )]
 struct Ball;
 
 #[derive(Component)]
 struct Player;
+
+#[derive(Component)]
+struct Shover;
 
 #[derive(Resource)]
 struct SpawnTimer(Timer);
@@ -89,9 +111,9 @@ struct Counter;
 struct BawlSpawnEvent(Entity);
 
 #[derive(EntityEvent)]
-struct BawlTouchedEvent {
+struct EntityBounded {
 	entity: Entity,
-	touched: Entity,
+	bounded: Entity,
 }
 
 fn spawn_camera(
@@ -151,9 +173,20 @@ fn spawn_player(
 		Some(Vec2::ZERO),
 		PLAYER_COLOR,
 		BALL_SHAPE,
-		|cmds| {
-			cmds.insert(Player);
-		},
+		|cmds| { cmds.insert(Player); },
+		ball_spawn,
+	);
+}
+
+fn spawn_shove_bawl(
+	position: Vec2,
+	ball_spawn: BallSpawnParams,
+) {
+	spawn_bawl(
+		Some(position),
+		SHOVER_COLOR,
+		BALL_SHAPE,
+		|cmds| { cmds.insert(Shover); },
 		ball_spawn,
 	);
 }
@@ -204,12 +237,11 @@ fn spawn_counter(mut commands: Commands,) {
 }
 
 fn impulse(
-	mut commands: Commands,
-	entity: Entity,
+	mut entity_cmd: EntityCommands,
 	force: Vec2,
 ) {
 	println!("impulsed");
-	commands.entity(entity)
+	entity_cmd
 		.insert(Impulse(force))
 		.entry::<MoveState>()
 		.and_modify(|mut move_state| {
@@ -225,21 +257,30 @@ fn main() {
 	app.add_plugins((
 		DefaultPlugins,
 		PanCamPlugin,
+		
+		// QuadTreePlugin::<(
+		// 	(CollisionCircle, GlobalTransform), (CollisionRect, (GlobalTransform, Sprite)),
+		// ),
+		// 40, 8, WORLD_SIZE.x, WORLD_SIZE.y, WORLD_CENTER.x, WORLD_CENTER.y, 20, 114514>::default()
 	));
+	
 	app.add_systems(Startup, (
 		spawn_camera,
 		spawn_player,
 		spawn_counter,
 	));
+	
 	app.add_systems(FixedUpdate, (
 		update_ui_count,
-		bawl_npc_spawn,
-		npc_wander,
-		project_positions,
+		handle_npc_spawn,
+		handle_npc_wander,
+		handle_position_projection,
 		handle_input,
+		handle_bounds,
 		handle_move_to,
-		handle_directional_move,
+		handle_shoving,
 		handle_impulse,
+		handle_directional_move,
 		handle_move,
 	).chain());
 	app.insert_resource(SpawnTimer(Timer::from_seconds(SPAWN_DURATION, TimerMode::Repeating)));
@@ -265,7 +306,7 @@ fn count_bawl_spawned(
 	b_count.0 += 1;
 }
 
-fn bawl_npc_spawn(
+fn handle_npc_spawn(
 	time: Res<Time<Fixed>>,
 	mut spawn_timer: ResMut<SpawnTimer>,
 	ball_spawn: BallSpawnParams,
@@ -275,8 +316,35 @@ fn bawl_npc_spawn(
 		let position = Vec2::new(
 			rand::thread_rng().gen_range(SPAWN_RANGE),
 			rand::thread_rng().gen_range(SPAWN_RANGE));
-		spawn_regular_bawl(position, ball_spawn);
+		let random = rand::thread_rng().gen_range(1..=2);
+		if random == 1 {
+			spawn_regular_bawl(position, ball_spawn);
+		} else {
+			spawn_shove_bawl(position, ball_spawn)
+		}
+		
 	}
+}
+
+fn move_to(
+	commands: &mut Commands,
+	entity: Entity,
+	goal: Vec2
+) {
+	commands.entity(entity)
+		.entry::<MoveToPosition>()
+		.and_modify(move |mut move_to| move_to.0 = goal)
+		.or_insert(MoveToPosition(goal));
+}
+
+fn is_bounding(
+	origin: (Circle, Vec2),
+	target: (Circle, Vec2)
+) -> bool {
+	let (circle_a, pos_a) = origin;
+	let (circle_b, pos_b) = target;
+	let distance = pos_a.distance(pos_b);
+	distance < circle_a.radius + circle_b.radius
 }
 
 fn handle_input(
@@ -304,18 +372,53 @@ fn handle_input(
 	move_dir.0 = dir.normalize_or_zero();
 }
 
-fn move_to(
-	commands: &mut Commands,
-	entity: Entity,
-	goal: Vec2
+fn handle_shoving(
+	mut commands: Commands,
+	shovers: Query<(&BoundedEntities, &Position), With<Shover>>,
+	targets: Query<&Position, With<Velocity>>,
 ) {
-	commands.entity(entity)
-		.entry::<MoveToPosition>()
-		.and_modify(move |mut move_to| move_to.0 = goal)
-		.or_insert(MoveToPosition(goal));
+	for (bounded_entities, origin) in shovers {
+		for target_entity in bounded_entities.0.iter() {
+			if let Ok(targ_pos) = targets.get(target_entity) {
+				
+				let resultant = origin.0 - targ_pos.0;
+				let dir = resultant.normalize();
+				
+				let force = dir * SHOVE_POWER;
+				impulse(commands.entity(target_entity), -force);
+			}
+		}
+	}
 }
 
-fn npc_wander(
+fn handle_bounds(
+	mut commands: Commands,
+	with_bounds: Query<(Entity, &Bounder, &Position, &mut BoundedEntities)>,
+	boundable: Query<(Entity, &Bounder, &Position)>,
+) {
+	for (own_entity, bounder, position, mut bounded_entities) in with_bounds {
+		for (target_entity, target_bounder, target_position) in boundable {
+			if target_entity != own_entity {
+				let bounded = is_bounding(
+					(bounder.0, position.0),
+					(target_bounder.0, target_position.0),
+				);
+				
+				if bounded_entities.0.contains(&target_entity) { // if already contained
+					if !bounded {
+						bounded_entities.0.retain(|&ent| ent != target_entity); 
+					}
+				} else {
+					if bounded {
+						bounded_entities.0.push(target_entity);
+					}
+				}
+			}
+		}
+	}
+}
+
+fn handle_npc_wander(
 	mut commands: Commands,
 	time: Res<Time<Fixed>>,
 	to_move: Query<
@@ -336,7 +439,7 @@ fn npc_wander(
 	}
 }
 
-fn project_positions(
+fn handle_position_projection(
 	mut positionables: Query<(&mut Transform, &Position)>
 ) {
 	for (mut transform, position) in &mut positionables {
